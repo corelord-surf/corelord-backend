@@ -2,12 +2,12 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const OpenAI = require('openai'); // OpenAI v4
+const OpenAI = require('openai'); // OpenAI v4 SDK
 
 const app = express();
 const port = process.env.PORT || 8080;
 
-// Middleware
+// ✅ Middleware
 app.use(cors());
 app.use(bodyParser.json());
 
@@ -34,14 +34,14 @@ app.post('/api/surfplan', async (req, res) => {
     Output should include ideal days and any tips.`;
 
     const chatCompletion = await openai.chat.completions.create({
-      model: 'gpt-4',
+      model: 'gpt-3.5-turbo', // ✅ Updated model
       messages: [{ role: 'user', content: prompt }],
     });
 
     const reply = chatCompletion.choices[0].message.content;
     res.json({ plan: reply });
   } catch (error) {
-    // 🔍 Detailed error logging
+    // 🔍 Detailed error handling
     if (error.response) {
       console.error('OpenAI API Error:', error.response.status, error.response.data);
       res.status(error.response.status).json({ error: error.response.data });
