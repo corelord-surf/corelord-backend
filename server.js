@@ -7,6 +7,7 @@ const OpenAI = require('openai'); // OpenAI v4
 const app = express();
 const port = process.env.PORT || 8080;
 
+// Middleware
 app.use(cors());
 app.use(bodyParser.json());
 
@@ -33,15 +34,24 @@ app.post('/api/surfplan', async (req, res) => {
     Output should include ideal days and any tips.`;
 
     const chatCompletion = await openai.chat.completions.create({
-      model: 'gpt-4', // or 'gpt-3.5-turbo' if you're using that
+      model: 'gpt-4',
       messages: [{ role: 'user', content: prompt }],
     });
 
     const reply = chatCompletion.choices[0].message.content;
     res.json({ plan: reply });
   } catch (error) {
-    console.error('OpenAI error:', error);
-    res.status(500).json({ error: 'Something went wrong with AI response.' });
+    // 🔍 Detailed error logging
+    if (error.response) {
+      console.error('OpenAI API Error:', error.response.status, error.response.data);
+      res.status(error.response.status).json({ error: error.response.data });
+    } else if (error.request) {
+      console.error('No response from OpenAI API:', error.request);
+      res.status(500).json({ error: 'No response received from OpenAI API.' });
+    } else {
+      console.error('Error setting up OpenAI request:', error.message);
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
