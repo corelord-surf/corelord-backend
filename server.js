@@ -11,51 +11,58 @@ const sql = require('mssql');
 const app = express();
 const port = process.env.PORT || 8080;
 
-// ─── CONNECT TO AZURE SQL (Option 1: raw connection string) ─────────────────
-const connStr = process.env.SQLAZURECONNSTR_CorelordDb;
-console.log('⛓️ Raw SQL string:', connStr);
+// ─── CONFIGURE & CONNECT TO AZURE SQL ──────────────────────────────────────────
+const rawConn = process.env.SQLAZURECONNSTR_CorelordDb;
+console.log('⛓️ Raw SQL string:', rawConn);
 
-sql.connect(connStr)
+// Wrap your raw string in the mssql config object:
+const dbConfig = {
+  connectionString: rawConn,
+  options: {
+    encrypt: true,       // Azure requires encryption
+    enableArithAbort: true
+  }
+};
+
+sql.connect(dbConfig)
   .then(() => console.log('✅ Connected to Azure SQL Database'))
   .catch(err => {
     console.error('❌ Azure SQL connection error:', err);
     process.exit(1);
   });
 
-// ─── MIDDLEWARE ─────────────────────────────────────────────────────────────
+// ─── MIDDLEWARE ────────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(bodyParser.json());
 
-// ─── HEALTHCHECK ─────────────────────────────────────────────────────────────
+// ─── HEALTHCHECK ──────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.send('Corelord backend is running ✅');
 });
 
-// ─── AUTH HELPERS ───────────────────────────────────────────────────────────
+// ─── AUTH HELPERS ─────────────────────────────────────────────────────────────
 const users = {}; // in-memory for MVP
 
 function authenticate(req, res, next) {
   const auth = req.headers.authorization;
   if (!auth) return res.status(401).json({ error: 'No token' });
-
   try {
-    const payload = jwt.verify(auth.replace('Bearer ', ''), process.env.JWT_SECRET);
-    req.user = payload;
+    req.user = jwt.verify(auth.replace('Bearer ', ''), process.env.JWT_SECRET);
     next();
   } catch {
     return res.status(401).json({ error: 'Invalid token' });
   }
 }
 
-// ─── REGISTER / CONFIRM / LOGIN ─────────────────────────────────────────────
+// ─── REGISTER / CONFIRM / LOGIN ────────────────────────────────────────────────
 app.post('/register', async (req, res) => {
   const { email, password } = req.body;
   if (users[email]) return res.status(400).json({ error: 'User already exists' });
 
   const passwordHash = await bcrypt.hash(password, 10);
   const confirmationToken = uuidv4();
-  users[email] = { passwordHash, confirmed: false, confirmationToken, favourites: [], profile: {} };
 
+  users[email] = { passwordHash, confirmed: false, confirmationToken, favourites: [], profile: {} };
   console.log(`Confirmation token for ${email}: ${confirmationToken}`);
   res.json({ message: 'User registered. Please confirm your email.' });
 });
@@ -64,7 +71,6 @@ app.post('/confirm', (req, res) => {
   const { email, token } = req.body;
   const u = users[email];
   if (!u || u.confirmationToken !== token) return res.status(400).json({ error: 'Invalid token or email' });
-
   u.confirmed = true;
   delete u.confirmationToken;
   res.json({ message: 'Email confirmed!' });
@@ -74,16 +80,14 @@ app.post('/login', async (req, res) => {
   const { email, password } = req.body;
   const u = users[email];
   if (!u || !u.confirmed) return res.status(403).json({ error: 'Email not confirmed or user not found' });
-
   if (!await bcrypt.compare(password, u.passwordHash)) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
-
   const token = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: '7d' });
   res.json({ token });
 });
 
-// ─── PROFILE SETUP ────────────────────────────────────────────────────────────
+// ─── PROFILE SETUP ─────────────────────────────────────────────────────────────
 app.post('/api/profile', authenticate, async (req, res) => {
   const { email } = req.user;
   const { name, region, phone, updates, availability } = req.body;
@@ -94,14 +98,14 @@ app.post('/api/profile', authenticate, async (req, res) => {
 
   // persist to Azure SQL
   try {
-    const pool = await sql.connect(connStr);
+    const pool = await sql.connect();   // uses the global pool you opened above
     await pool.request()
-      .input('email', sql.NVarChar, email)
-      .input('name', sql.NVarChar, name)
-      .input('region', sql.NVarChar, region)
-      .input('phone', sql.NVarChar, phone)
-      .input('updates', sql.NVarChar, JSON.stringify(updates))
-      .input('availability', sql.NVarChar, JSON.stringify(availability))
+      .input('email',       sql.NVarChar, email)
+      .input('name',        sql.NVarChar, name)
+      .input('region',      sql.NVarChar, region)
+      .input('phone',       sql.NVarChar, phone)
+      .input('updates',     sql.NVarChar, JSON.stringify(updates))
+      .input('availability',sql.NVarChar, JSON.stringify(availability))
       .query(`
         MERGE Profiles AS target
         USING (SELECT @email AS email) AS src
