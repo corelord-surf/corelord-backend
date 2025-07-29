@@ -6,29 +6,36 @@ const OpenAI = require('openai');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const { v4: uuidv4 } = require('uuid');
-const sql = require('mssql');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
 
 const app = express();
 const port = process.env.PORT || 8080;
 
-// ─── AZURE SQL POOL SETUP ───────────────────────────────────────────────────────
-// Wrap your ADO-style conn string in a config object:
-const dbConfig = {
-  connectionString: process.env.SQLAZURECONNSTR_CorelordDb,
-  options: { encrypt: true }
-};
-
-// Create a single shared pool promise
-const poolPromise = sql
-  .connect(dbConfig)
-  .then(pool => {
-    console.log('✅ Connected to Azure SQL Database');
-    return pool;
-  })
-  .catch(err => {
-    console.error('❌ Azure SQL connection error:', err);
+// ─── SQLITE SETUP ────────────────────────────────────────────────────────────────
+// This file lives under your app root; on Azure App Service it persists under /home
+const dbPath = path.join(__dirname, 'corelord.db');
+const db = new sqlite3.Database(dbPath, err => {
+  if (err) {
+    console.error('❌ Failed to open SQLite DB:', err);
     process.exit(1);
-  });
+  }
+});
+
+// Create Profiles table if missing
+db.serialize(() => {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS Profiles (
+      email TEXT PRIMARY KEY,
+      name TEXT,
+      region TEXT,
+      phone TEXT,
+      updates TEXT,
+      availability TEXT
+    )
+  `);
+  console.log('✅ SQLite table ready at', dbPath);
+});
 
 // ─── MIDDLEWARE ─────────────────────────────────────────────────────────────────
 app.use(cors());
@@ -36,7 +43,7 @@ app.use(bodyParser.json());
 
 // ─── HEALTHCHECK ────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
-  res.send('Corelord backend is running ✅');
+  res.send('Corelord backend (SQLite) is running ✅');
 });
 
 // ─── AUTH HELPERS ───────────────────────────────────────────────────────────────
@@ -82,45 +89,42 @@ app.post('/login', async (req, res) => {
 });
 
 // ─── PROFILE SETUP ──────────────────────────────────────────────────────────────
-app.post('/api/profile', authenticate, async (req, res) => {
+app.post('/api/profile', authenticate, (req, res) => {
   const { email } = req.user;
   const { name, region, phone, updates, availability } = req.body;
 
-  // 1) save in-memory for now
+  // in-memory
   users[email].profile = { name, region, phone, updates, availability };
-  console.log(`📌 Profile saved (in-memory) for ${email}`, users[email].profile);
+  console.log(`📌 Saved in-memory profile for ${email}`, users[email].profile);
 
-  // 2) persist to Azure SQL
-  try {
-    const pool = await poolPromise;
-    await pool.request()
-      .input('email', sql.NVarChar, email)
-      .input('name', sql.NVarChar, name)
-      .input('region', sql.NVarChar, region)
-      .input('phone', sql.NVarChar, phone)
-      .input('updates', sql.NVarChar, JSON.stringify(updates))
-      .input('availability', sql.NVarChar, JSON.stringify(availability))
-      .query(`
-        MERGE Profiles AS target
-        USING (SELECT @email AS email) AS src
-          ON target.email = src.email
-        WHEN MATCHED THEN
-          UPDATE SET 
-            name = @name, 
-            region = @region, 
-            phone = @phone, 
-            updates = @updates, 
-            availability = @availability
-        WHEN NOT MATCHED THEN
-          INSERT (email, name, region, phone, updates, availability)
-          VALUES (@email, @name, @region, @phone, @updates, @availability);
-      `);
-  } catch (err) {
-    console.error('DB write error:', err);
-    return res.status(500).json({ error: 'Failed to save profile to database' });
-  }
+  // persist to SQLite
+  const stmt = db.prepare(`
+    INSERT INTO Profiles (email,name,region,phone,updates,availability)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(email) DO UPDATE SET
+      name=excluded.name,
+      region=excluded.region,
+      phone=excluded.phone,
+      updates=excluded.updates,
+      availability=excluded.availability
+  `);
 
-  res.json({ message: 'Profile saved successfully' });
+  stmt.run(
+    email,
+    name,
+    region,
+    phone,
+    JSON.stringify(updates),
+    JSON.stringify(availability),
+    function(err) {
+      if (err) {
+        console.error('❌ SQLite write error:', err);
+        return res.status(500).json({ error: 'Failed to save profile' });
+      }
+      res.json({ message: 'Profile saved successfully' });
+    }
+  );
+  stmt.finalize();
 });
 
 // ─── SURF PLANNER ───────────────────────────────────────────────────────────────
@@ -150,5 +154,5 @@ Output should include ideal days and any tips.`;
 
 // ─── START SERVER ───────────────────────────────────────────────────────────────
 app.listen(port, () => {
-  console.log(`🚀 CoreLord backend listening on port ${port}`);
+  console.log(`🚀 CoreLord backend (SQLite) listening on port ${port}`);
 });
