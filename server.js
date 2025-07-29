@@ -1,7 +1,6 @@
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
-const cors = require('cors');
 const OpenAI = require('openai');
 const { v4: uuidv4 } = require('uuid');
 const sqlite3 = require('sqlite3').verbose();
@@ -35,22 +34,26 @@ db.serialize(() => {
   console.log('✅ SQLite table ready at', dbPath);
 });
 
-// ─── MIDDLEWARE ─────────────────────────────────────────────────────────────────
+// ─── CORS FIX ────────────────────────────────────────────────────────────────────
 const allowedOrigins = [
   "https://agreeable-ground-04732bc03.1.azurestaticapps.net",
   "http://localhost:5500"
 ];
 
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
   }
-}));
-app.options('*', cors()); // 💥 Enable preflight response for all routes
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 app.use(bodyParser.json());
 
 // ─── JWT VALIDATION FOR ENTRA ID ────────────────────────────────────────────────
