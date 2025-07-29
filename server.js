@@ -11,7 +11,7 @@ const app = express();
 const port = process.env.PORT || 8080;
 
 // In-memory storage (for MVP/demo purposes)
-const users = {}; // { email: { passwordHash, confirmed, favourites: [], token } }
+const users = {}; // { email: { passwordHash, confirmed, favourites: [], profile: {}, token } }
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -115,6 +115,24 @@ app.get('/favourites', authenticate, (req, res) => {
   res.json({ favourites: users[email].favourites || [] });
 });
 
+// ✅ Profile setup endpoint
+app.post('/api/profile', authenticate, (req, res) => {
+  const { email } = req.user;
+  const { name, region, phone, updates, availability } = req.body;
+
+  users[email].profile = {
+    name,
+    region,
+    phone,
+    updates,
+    availability,
+  };
+
+  console.log(`📌 Profile saved for ${email}`, users[email].profile);
+
+  res.json({ message: 'Profile saved successfully' });
+});
+
 // ✅ Surf planning endpoint
 app.post('/api/surfplan', async (req, res) => {
   try {
@@ -149,5 +167,5 @@ app.post('/api/surfplan', async (req, res) => {
 // TODO: Add user to Entra ID here when account is created
 
 app.listen(port, () => {
-  console.log(`Corelord backend running on port ${port}`);
+  console.log(`🚀 Corelord backend running on port ${port}`);
 });
