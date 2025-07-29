@@ -35,8 +35,23 @@ db.serialize(() => {
   console.log('✅ SQLite table ready at', dbPath);
 });
 
-// ─── MIDDLEWARE ─────────────────────────────────────────────────────────────────
-app.use(cors());
+// ─── CORS CONFIGURATION ──────────────────────────────────────────────────────────
+const allowedOrigins = [
+  "https://agreeable-ground-04732bc03.1.azurestaticapps.net",
+  "http://localhost:5500"
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  }
+}));
+
+// ─── BODY PARSER ────────────────────────────────────────────────────────────────
 app.use(bodyParser.json());
 
 // ─── JWT VALIDATION FOR ENTRA ID ────────────────────────────────────────────────
@@ -67,7 +82,6 @@ app.post('/api/profile', (req, res) => {
     return res.status(400).json({ error: 'No email in token' });
   }
 
-  // persist to SQLite
   const stmt = db.prepare(`
     INSERT INTO Profiles (email,name,region,phone,updates,availability)
     VALUES (?, ?, ?, ?, ?, ?)
