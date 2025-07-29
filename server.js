@@ -3,17 +3,16 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const OpenAI = require('openai');
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcrypt');
 const { v4: uuidv4 } = require('uuid');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const jwt = require('express-jwt');
+const jwksRsa = require('jwks-rsa');
 
 const app = express();
 const port = process.env.PORT || 8080;
 
 // ─── SQLITE SETUP ────────────────────────────────────────────────────────────────
-// This file lives under your app root; on Azure App Service it persists under /home
 const dbPath = path.join(__dirname, 'corelord.db');
 const db = new sqlite3.Database(dbPath, err => {
   if (err) {
@@ -22,7 +21,6 @@ const db = new sqlite3.Database(dbPath, err => {
   }
 });
 
-// Create Profiles table if missing
 db.serialize(() => {
   db.run(`
     CREATE TABLE IF NOT EXISTS Profiles (
@@ -41,61 +39,33 @@ db.serialize(() => {
 app.use(cors());
 app.use(bodyParser.json());
 
+// ─── JWT VALIDATION FOR ENTRA ID ────────────────────────────────────────────────
+app.use(
+  jwt({
+    secret: jwksRsa.expressJwtSecret({
+      cache: true,
+      rateLimit: true,
+      jwksUri: `https://login.microsoftonline.com/d048d6e2-6e9f-4af0-afcf-58a5ad036480/discovery/v2.0/keys`,
+    }),
+    audience: "825d8657-c509-42b6-9107-dd5e39268723",
+    issuer: "https://login.microsoftonline.com/d048d6e2-6e9f-4af0-afcf-58a5ad036480/v2.0",
+    algorithms: ["RS256"],
+  }).unless({ path: ["/health"] })
+);
+
 // ─── HEALTHCHECK ────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.send('Corelord backend (SQLite) is running ✅');
 });
 
-// ─── AUTH HELPERS ───────────────────────────────────────────────────────────────
-const users = {}; // in-memory for MVP
-function authenticate(req, res, next) {
-  const auth = req.headers.authorization;
-  if (!auth) return res.status(401).json({ error: 'No token' });
-  try {
-    req.user = jwt.verify(auth.replace('Bearer ', ''), process.env.JWT_SECRET);
-    next();
-  } catch {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
-}
-
-// ─── REGISTER / CONFIRM / LOGIN ─────────────────────────────────────────────────
-app.post('/register', async (req, res) => {
-  const { email, password } = req.body;
-  if (users[email]) return res.status(400).json({ error: 'User already exists' });
-  const passwordHash = await bcrypt.hash(password, 10);
-  const confirmationToken = uuidv4();
-  users[email] = { passwordHash, confirmed: false, confirmationToken, favourites: [], profile: {} };
-  console.log(`Confirmation token for ${email}: ${confirmationToken}`);
-  res.json({ message: 'User registered. Please confirm your email.' });
-});
-
-app.post('/confirm', (req, res) => {
-  const { email, token } = req.body;
-  const u = users[email];
-  if (!u || u.confirmationToken !== token) return res.status(400).json({ error: 'Invalid token or email' });
-  u.confirmed = true;
-  delete u.confirmationToken;
-  res.json({ message: 'Email confirmed!' });
-});
-
-app.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-  const u = users[email];
-  if (!u || !u.confirmed) return res.status(403).json({ error: 'Email not confirmed or user not found' });
-  if (!await bcrypt.compare(password, u.passwordHash)) return res.status(401).json({ error: 'Invalid credentials' });
-  const token = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token });
-});
-
 // ─── PROFILE SETUP ──────────────────────────────────────────────────────────────
-app.post('/api/profile', authenticate, (req, res) => {
-  const { email } = req.user;
+app.post('/api/profile', (req, res) => {
+  const email = req.user?.preferred_username;
   const { name, region, phone, updates, availability } = req.body;
 
-  // in-memory
-  users[email].profile = { name, region, phone, updates, availability };
-  console.log(`📌 Saved in-memory profile for ${email}`, users[email].profile);
+  if (!email) {
+    return res.status(400).json({ error: 'No email in token' });
+  }
 
   // persist to SQLite
   const stmt = db.prepare(`
@@ -116,7 +86,7 @@ app.post('/api/profile', authenticate, (req, res) => {
     phone,
     JSON.stringify(updates),
     JSON.stringify(availability),
-    function(err) {
+    function (err) {
       if (err) {
         console.error('❌ SQLite write error:', err);
         return res.status(500).json({ error: 'Failed to save profile' });
@@ -127,10 +97,28 @@ app.post('/api/profile', authenticate, (req, res) => {
   stmt.finalize();
 });
 
+app.get('/api/profile', (req, res) => {
+  const email = req.user?.preferred_username;
+  if (!email) return res.status(400).json({ error: 'No email in token' });
+
+  db.get(`SELECT * FROM Profiles WHERE email = ?`, [email], (err, row) => {
+    if (err) {
+      console.error('❌ DB read error:', err);
+      return res.status(500).json({ error: 'DB error' });
+    }
+    if (!row) return res.status(404).json({ error: 'Profile not found' });
+    res.json({
+      ...row,
+      updates: JSON.parse(row.updates || "[]"),
+      availability: JSON.parse(row.availability || "[]"),
+    });
+  });
+});
+
 // ─── SURF PLANNER ───────────────────────────────────────────────────────────────
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-app.post('/api/surfplan', authenticate, async (req, res) => {
+app.post('/api/surfplan', async (req, res) => {
   try {
     const { break: surfBreak, availability, conditions } = req.body;
     const prompt = `Create a surf plan based on:
