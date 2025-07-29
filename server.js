@@ -11,38 +11,36 @@ const sql = require('mssql');
 const app = express();
 const port = process.env.PORT || 8080;
 
-// ─── CONFIGURE & CONNECT TO AZURE SQL ──────────────────────────────────────────
-const rawConn = process.env.SQLAZURECONNSTR_CorelordDb;
-console.log('⛓️ Raw SQL string:', rawConn);
-
-// Wrap your raw string in the mssql config object:
+// ─── AZURE SQL POOL SETUP ───────────────────────────────────────────────────────
+// Wrap your ADO-style conn string in a config object:
 const dbConfig = {
-  connectionString: rawConn,
-  options: {
-    encrypt: true,       // Azure requires encryption
-    enableArithAbort: true
-  }
+  connectionString: process.env.SQLAZURECONNSTR_CorelordDb,
+  options: { encrypt: true }
 };
 
-sql.connect(dbConfig)
-  .then(() => console.log('✅ Connected to Azure SQL Database'))
+// Create a single shared pool promise
+const poolPromise = sql
+  .connect(dbConfig)
+  .then(pool => {
+    console.log('✅ Connected to Azure SQL Database');
+    return pool;
+  })
   .catch(err => {
     console.error('❌ Azure SQL connection error:', err);
     process.exit(1);
   });
 
-// ─── MIDDLEWARE ────────────────────────────────────────────────────────────────
+// ─── MIDDLEWARE ─────────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(bodyParser.json());
 
-// ─── HEALTHCHECK ──────────────────────────────────────────────────────────────
+// ─── HEALTHCHECK ────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.send('Corelord backend is running ✅');
 });
 
-// ─── AUTH HELPERS ─────────────────────────────────────────────────────────────
+// ─── AUTH HELPERS ───────────────────────────────────────────────────────────────
 const users = {}; // in-memory for MVP
-
 function authenticate(req, res, next) {
   const auth = req.headers.authorization;
   if (!auth) return res.status(401).json({ error: 'No token' });
@@ -54,14 +52,12 @@ function authenticate(req, res, next) {
   }
 }
 
-// ─── REGISTER / CONFIRM / LOGIN ────────────────────────────────────────────────
+// ─── REGISTER / CONFIRM / LOGIN ─────────────────────────────────────────────────
 app.post('/register', async (req, res) => {
   const { email, password } = req.body;
   if (users[email]) return res.status(400).json({ error: 'User already exists' });
-
   const passwordHash = await bcrypt.hash(password, 10);
   const confirmationToken = uuidv4();
-
   users[email] = { passwordHash, confirmed: false, confirmationToken, favourites: [], profile: {} };
   console.log(`Confirmation token for ${email}: ${confirmationToken}`);
   res.json({ message: 'User registered. Please confirm your email.' });
@@ -80,38 +76,41 @@ app.post('/login', async (req, res) => {
   const { email, password } = req.body;
   const u = users[email];
   if (!u || !u.confirmed) return res.status(403).json({ error: 'Email not confirmed or user not found' });
-  if (!await bcrypt.compare(password, u.passwordHash)) {
-    return res.status(401).json({ error: 'Invalid credentials' });
-  }
+  if (!await bcrypt.compare(password, u.passwordHash)) return res.status(401).json({ error: 'Invalid credentials' });
   const token = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: '7d' });
   res.json({ token });
 });
 
-// ─── PROFILE SETUP ─────────────────────────────────────────────────────────────
+// ─── PROFILE SETUP ──────────────────────────────────────────────────────────────
 app.post('/api/profile', authenticate, async (req, res) => {
   const { email } = req.user;
   const { name, region, phone, updates, availability } = req.body;
 
-  // save in-memory
+  // 1) save in-memory for now
   users[email].profile = { name, region, phone, updates, availability };
-  console.log(`📌 Profile saved for ${email}`, users[email].profile);
+  console.log(`📌 Profile saved (in-memory) for ${email}`, users[email].profile);
 
-  // persist to Azure SQL
+  // 2) persist to Azure SQL
   try {
-    const pool = await sql.connect();   // uses the global pool you opened above
+    const pool = await poolPromise;
     await pool.request()
-      .input('email',       sql.NVarChar, email)
-      .input('name',        sql.NVarChar, name)
-      .input('region',      sql.NVarChar, region)
-      .input('phone',       sql.NVarChar, phone)
-      .input('updates',     sql.NVarChar, JSON.stringify(updates))
-      .input('availability',sql.NVarChar, JSON.stringify(availability))
+      .input('email', sql.NVarChar, email)
+      .input('name', sql.NVarChar, name)
+      .input('region', sql.NVarChar, region)
+      .input('phone', sql.NVarChar, phone)
+      .input('updates', sql.NVarChar, JSON.stringify(updates))
+      .input('availability', sql.NVarChar, JSON.stringify(availability))
       .query(`
         MERGE Profiles AS target
         USING (SELECT @email AS email) AS src
           ON target.email = src.email
         WHEN MATCHED THEN
-          UPDATE SET name = @name, region = @region, phone = @phone, updates = @updates, availability = @availability
+          UPDATE SET 
+            name = @name, 
+            region = @region, 
+            phone = @phone, 
+            updates = @updates, 
+            availability = @availability
         WHEN NOT MATCHED THEN
           INSERT (email, name, region, phone, updates, availability)
           VALUES (@email, @name, @region, @phone, @updates, @availability);
@@ -124,7 +123,7 @@ app.post('/api/profile', authenticate, async (req, res) => {
   res.json({ message: 'Profile saved successfully' });
 });
 
-// ─── SURF PLANNER ─────────────────────────────────────────────────────────────
+// ─── SURF PLANNER ───────────────────────────────────────────────────────────────
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 app.post('/api/surfplan', authenticate, async (req, res) => {
@@ -149,7 +148,7 @@ Output should include ideal days and any tips.`;
   }
 });
 
-// ─── START SERVER ─────────────────────────────────────────────────────────────
+// ─── START SERVER ───────────────────────────────────────────────────────────────
 app.listen(port, () => {
   console.log(`🚀 CoreLord backend listening on port ${port}`);
 });
