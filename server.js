@@ -35,7 +35,7 @@ db.serialize(() => {
   console.log('✅ SQLite table ready at', dbPath);
 });
 
-// ─── CORS CONFIGURATION ──────────────────────────────────────────────────────────
+// ─── MIDDLEWARE ─────────────────────────────────────────────────────────────────
 const allowedOrigins = [
   "https://agreeable-ground-04732bc03.1.azurestaticapps.net",
   "http://localhost:5500"
@@ -50,8 +50,7 @@ app.use(cors({
     }
   }
 }));
-
-// ─── BODY PARSER ────────────────────────────────────────────────────────────────
+app.options('*', cors()); // 💥 Enable preflight response for all routes
 app.use(bodyParser.json());
 
 // ─── JWT VALIDATION FOR ENTRA ID ────────────────────────────────────────────────
@@ -83,7 +82,7 @@ app.post('/api/profile', (req, res) => {
   }
 
   const stmt = db.prepare(`
-    INSERT INTO Profiles (email,name,region,phone,updates,availability)
+    INSERT INTO Profiles (email, name, region, phone, updates, availability)
     VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(email) DO UPDATE SET
       name=excluded.name,
