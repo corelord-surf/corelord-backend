@@ -1,5 +1,3 @@
-console.log('⛓️ Raw SQL string:', process.env.SQLAZURECONNSTR_CorelordDb);
-
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -13,29 +11,27 @@ const sql = require('mssql');
 const app = express();
 const port = process.env.PORT || 8080;
 
-// ─── CONNECT TO AZURE SQL ─────────────────────────────────────────────────────────
-const dbConfig = {
-  connectionString: process.env.SQLAZURECONNSTR_CorelordDb,
-  options: { encrypt: true }
-};
+// ─── CONNECT TO AZURE SQL (Option 1: raw connection string) ─────────────────
+const connStr = process.env.SQLAZURECONNSTR_CorelordDb;
+console.log('⛓️ Raw SQL string:', connStr);
 
-sql.connect(dbConfig)
+sql.connect(connStr)
   .then(() => console.log('✅ Connected to Azure SQL Database'))
   .catch(err => {
     console.error('❌ Azure SQL connection error:', err);
     process.exit(1);
   });
 
-// ─── MIDDLEWARE ────────────────────────────────────────────────────────────────────
+// ─── MIDDLEWARE ─────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(bodyParser.json());
 
-// ─── HEALTHCHECK ──────────────────────────────────────────────────────────────────
+// ─── HEALTHCHECK ─────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.send('Corelord backend is running ✅');
 });
 
-// ─── AUTH HELPERS ─────────────────────────────────────────────────────────────────
+// ─── AUTH HELPERS ───────────────────────────────────────────────────────────
 const users = {}; // in-memory for MVP
 
 function authenticate(req, res, next) {
@@ -51,7 +47,7 @@ function authenticate(req, res, next) {
   }
 }
 
-// ─── REGISTER / CONFIRM / LOGIN ────────────────────────────────────────────────────
+// ─── REGISTER / CONFIRM / LOGIN ─────────────────────────────────────────────
 app.post('/register', async (req, res) => {
   const { email, password } = req.body;
   if (users[email]) return res.status(400).json({ error: 'User already exists' });
@@ -87,7 +83,7 @@ app.post('/login', async (req, res) => {
   res.json({ token });
 });
 
-// ─── PROFILE SETUP ─────────────────────────────────────────────────────────────────
+// ─── PROFILE SETUP ────────────────────────────────────────────────────────────
 app.post('/api/profile', authenticate, async (req, res) => {
   const { email } = req.user;
   const { name, region, phone, updates, availability } = req.body;
@@ -98,8 +94,8 @@ app.post('/api/profile', authenticate, async (req, res) => {
 
   // persist to Azure SQL
   try {
-    const pool = sql.connect(); // uses the global pool
-    await (await pool).request()
+    const pool = await sql.connect(connStr);
+    await pool.request()
       .input('email', sql.NVarChar, email)
       .input('name', sql.NVarChar, name)
       .input('region', sql.NVarChar, region)
@@ -124,7 +120,7 @@ app.post('/api/profile', authenticate, async (req, res) => {
   res.json({ message: 'Profile saved successfully' });
 });
 
-// ─── SURF PLANNER ─────────────────────────────────────────────────────────────────
+// ─── SURF PLANNER ─────────────────────────────────────────────────────────────
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 app.post('/api/surfplan', authenticate, async (req, res) => {
@@ -149,7 +145,7 @@ Output should include ideal days and any tips.`;
   }
 });
 
-// ─── START SERVER ─────────────────────────────────────────────────────────────────
+// ─── START SERVER ─────────────────────────────────────────────────────────────
 app.listen(port, () => {
   console.log(`🚀 CoreLord backend listening on port ${port}`);
 });
