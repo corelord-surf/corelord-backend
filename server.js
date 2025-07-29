@@ -1,3 +1,5 @@
+console.log('⛓️ Raw SQL string:', process.env.SQLAZURECONNSTR_CorelordDb);
+
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
