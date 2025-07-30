@@ -7,7 +7,7 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const jwt = require('express-jwt');
 const jwksRsa = require('jwks-rsa');
-const cors = require('cors'); // ✅ ADD THIS
+const cors = require('cors');
 
 const app = express();
 const port = process.env.PORT || 8080;
@@ -35,9 +35,7 @@ db.serialize(() => {
   console.log('✅ SQLite table ready at', dbPath);
 });
 
-// ─── CORS FIX ────────────────────────────────────────────────────────────────────
-const cors = require('cors');
-
+// ─── CORS CONFIG ─────────────────────────────────────────────────────────────────
 const allowedOrigins = [
   "https://agreeable-ground-04732bc03.1.azurestaticapps.net",
   "http://localhost:5500"
@@ -45,7 +43,6 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests with no origin (like curl or mobile apps)
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -57,10 +54,9 @@ const corsOptions = {
   credentials: true
 };
 
-// Add this BEFORE your routes
-app.options('*', cors(corsOptions)); // handle preflight requests
 app.use(cors(corsOptions));
-
+app.options('*', cors(corsOptions));
+app.use(bodyParser.json());
 
 // ─── JWT VALIDATION FOR ENTRA ID ────────────────────────────────────────────────
 app.use(
@@ -73,15 +69,19 @@ app.use(
     audience: "825d8657-c509-42b6-9107-dd5e39268723",
     issuer: "https://login.microsoftonline.com/d048d6e2-6e9f-4af0-afcf-58a5ad036480/v2.0",
     algorithms: ["RS256"],
-  }).unless({ path: ["/health"] })
+  }).unless({ path: ["/health", "/"] })
 );
 
-// ─── HEALTHCHECK ────────────────────────────────────────────────────────────────
-app.get('/health', (req, res) => {
-  res.send('Corelord backend (SQLite) is running ✅');
+// ─── HEALTHCHECK & DEFAULT ───────────────────────────────────────────────────────
+app.get('/', (req, res) => {
+  res.send('🌊 Corelord backend root is up');
 });
 
-// ─── PROFILE SETUP ──────────────────────────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.send('✅ Corelord backend (SQLite) is running');
+});
+
+// ─── PROFILE ENDPOINTS ───────────────────────────────────────────────────────────
 app.post('/api/profile', (req, res) => {
   const email = req.user?.preferred_username;
   const { name, region, phone, updates, availability } = req.body;
@@ -157,12 +157,12 @@ Output should include ideal days and any tips.`;
 
     res.json({ plan: chat.choices[0].message.content });
   } catch (err) {
-    console.error('OpenAI error:', err);
+    console.error('❌ OpenAI error:', err);
     res.status(500).json({ error: 'Something went wrong with AI response.' });
   }
 });
 
 // ─── START SERVER ───────────────────────────────────────────────────────────────
 app.listen(port, () => {
-  console.log(`🚀 CoreLord backend (SQLite) listening on port ${port}`);
+  console.log(`🚀 CoreLord backend listening on port ${port}`);
 });
