@@ -66,7 +66,7 @@ app.use(
       rateLimit: true,
       jwksUri: `https://login.microsoftonline.com/d048d6e2-6e9f-4af0-afcf-58a5ad036480/discovery/v2.0/keys`,
     }),
-    audience: "825d8657-c509-42b6-9107-dd5e39268723",
+    audience: "api://315eede8-ee31-4487-b202-81e495e8f9fe",
     issuer: "https://login.microsoftonline.com/d048d6e2-6e9f-4af0-afcf-58a5ad036480/v2.0",
     algorithms: ["RS256"],
   }).unless({ path: ["/health", "/"] })
