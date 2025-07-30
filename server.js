@@ -36,23 +36,31 @@ db.serialize(() => {
 });
 
 // ─── CORS FIX ────────────────────────────────────────────────────────────────────
+const cors = require('cors');
+
 const allowedOrigins = [
   "https://agreeable-ground-04732bc03.1.azurestaticapps.net",
   "http://localhost:5500"
 ];
 
-app.use(cors({
+const corsOptions = {
   origin: function (origin, callback) {
+    // Allow requests with no origin (like curl or mobile apps)
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
     }
   },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
-}));
+};
 
-app.use(bodyParser.json());
+// Add this BEFORE your routes
+app.options('*', cors(corsOptions)); // handle preflight requests
+app.use(cors(corsOptions));
+
 
 // ─── JWT VALIDATION FOR ENTRA ID ────────────────────────────────────────────────
 app.use(
