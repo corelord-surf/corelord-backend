@@ -5,7 +5,7 @@ const OpenAI = require('openai');
 const { v4: uuidv4 } = require('uuid');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
-const jwt = require('express-jwt');
+const { expressjwt: jwt } = require('express-jwt');
 const jwksRsa = require('jwks-rsa');
 const cors = require('cors');
 
