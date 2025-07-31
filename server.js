@@ -66,7 +66,7 @@ app.use(
       rateLimit: true,
       jwksUri: `https://login.microsoftonline.com/d048d6e2-6e9f-4af0-afcf-58a5ad036480/discovery/v2.0/keys`,
     }),
-    audience: "api://315eede8-ee31-4487-b202-81e495e8f9fe",
+    audience: "315eede8-ee31-4487-b202-81e495e8f9fe", // ✅ FIXED audience
     issuer: "https://login.microsoftonline.com/d048d6e2-6e9f-4af0-afcf-58a5ad036480/v2.0",
     algorithms: ["RS256"],
   }).unless({ path: ["/health", "/", "/api/debug-audience"] })
@@ -83,7 +83,7 @@ app.get('/health', (req, res) => {
 
 app.get('/api/debug-audience', (req, res) => {
   res.send({
-    audience: "api://315eede8-ee31-4487-b202-81e495e8f9fe",
+    audience: "315eede8-ee31-4487-b202-81e495e8f9fe",
     message: "✅ This backend is using the correct audience for JWT validation."
   });
 });
