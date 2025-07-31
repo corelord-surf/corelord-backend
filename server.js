@@ -66,7 +66,7 @@ app.use(
       rateLimit: true,
       jwksUri: `https://login.microsoftonline.com/d048d6e2-6e9f-4af0-afcf-58a5ad036480/discovery/v2.0/keys`,
     }),
-    audience: "api://315eede8-ee31-4487-b202-81e495e8f9fe", // ✅ FIXED audience
+    audience: "api://315eede8-ee31-4487-b202-81e495e8f9fe",
     issuer: "https://login.microsoftonline.com/d048d6e2-6e9f-4af0-afcf-58a5ad036480/v2.0",
     algorithms: ["RS256"],
   }).unless({ path: ["/health", "/", "/api/debug-audience"] })
@@ -101,6 +101,20 @@ app.get('/api/debug-token', (req, res) => {
   res.json({
     tokenUser: req.user || "❌ No decoded token on request",
     tokenEmail: req.user?.preferred_username || "❌ No preferred_username in token",
+  });
+});
+
+app.get('/api/debug-user', (req, res) => {
+  if (!req.user) {
+    return res.status(403).json({ error: "❌ Token not decoded or missing" });
+  }
+
+  res.json({
+    email: req.user.preferred_username || "❌ No preferred_username",
+    oid: req.user.oid || "❌ No oid",
+    scp: req.user.scp || "❌ No scope",
+    aud: req.user.aud || "❌ No audience",
+    azp: req.user.azp || "❌ No azp"
   });
 });
 
