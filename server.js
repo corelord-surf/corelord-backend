@@ -66,10 +66,10 @@ app.use(
       rateLimit: true,
       jwksUri: `https://login.microsoftonline.com/d048d6e2-6e9f-4af0-afcf-58a5ad036480/discovery/v2.0/keys`,
     }),
-    audience: "api://315eede8-ee31-4487-b202-81e495e8f9fe", // ✅ CORRECTED HERE
+    audience: "api://315eede8-ee31-4487-b202-81e495e8f9fe", // ✅ MUST match frontend-requested token
     issuer: "https://login.microsoftonline.com/d048d6e2-6e9f-4af0-afcf-58a5ad036480/v2.0",
     algorithms: ["RS256"],
-  }).unless({ path: ["/health", "/"] })
+  }).unless({ path: ["/health", "/", "/api/debug-audience"] }) // 👈 allow debug-audience open
 );
 
 // ─── HEALTHCHECK & DEFAULT ───────────────────────────────────────────────────────
@@ -79,6 +79,13 @@ app.get('/', (req, res) => {
 
 app.get('/health', (req, res) => {
   res.send('✅ Corelord backend (SQLite) is running');
+});
+
+app.get('/api/debug-audience', (req, res) => {
+  res.send({
+    audience: "api://315eede8-ee31-4487-b202-81e495e8f9fe",
+    message: "✅ This backend is using the correct audience for JWT validation."
+  });
 });
 
 // ─── DEBUG TOKEN DECODING ────────────────────────────────────────────────────────
