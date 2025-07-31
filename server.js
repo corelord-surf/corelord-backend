@@ -66,10 +66,10 @@ app.use(
       rateLimit: true,
       jwksUri: `https://login.microsoftonline.com/d048d6e2-6e9f-4af0-afcf-58a5ad036480/discovery/v2.0/keys`,
     }),
-    audience: "api://315eede8-ee31-4487-b202-81e495e8f9fe", // ✅ MUST match frontend-requested token
+    audience: "api://315eede8-ee31-4487-b202-81e495e8f9fe",
     issuer: "https://login.microsoftonline.com/d048d6e2-6e9f-4af0-afcf-58a5ad036480/v2.0",
     algorithms: ["RS256"],
-  }).unless({ path: ["/health", "/", "/api/debug-audience"] }) // 👈 allow debug-audience open
+  }).unless({ path: ["/health", "/", "/api/debug-audience"] })
 );
 
 // ─── HEALTHCHECK & DEFAULT ───────────────────────────────────────────────────────
@@ -94,6 +94,14 @@ app.post('/api/debug', (req, res) => {
     message: 'Token received',
     headers: req.headers,
     user: req.user || 'No decoded token user',
+  });
+});
+
+// ─── NEW DEBUG ROUTE FOR EMAIL ───────────────────────────────────────────────────
+app.get('/api/debug-token', (req, res) => {
+  res.json({
+    tokenUser: req.user || "❌ No decoded token on request",
+    tokenEmail: req.user?.preferred_username || "❌ No preferred_username in token",
   });
 });
 
