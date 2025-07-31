@@ -81,6 +81,15 @@ app.get('/health', (req, res) => {
   res.send('✅ Corelord backend (SQLite) is running');
 });
 
+// ─── DEBUG TOKEN DECODING ────────────────────────────────────────────────────────
+app.post('/api/debug', (req, res) => {
+  res.json({
+    message: 'Token received',
+    headers: req.headers,
+    user: req.user || 'No decoded token user',
+  });
+});
+
 // ─── PROFILE ENDPOINTS ───────────────────────────────────────────────────────────
 app.post('/api/profile', (req, res) => {
   const email = req.user?.preferred_username;
