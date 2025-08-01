@@ -58,28 +58,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout source
-      uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '20.x'
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20.x'
 
-    - name: Install dependencies and build
-      run: |
-        npm install
-        npm run build --if-present
+      - name: Install dependencies and build
+        run: |
+          npm install
+          npm run build --if-present
 
-    - name: Login to Azure
-      uses: azure/login@v1
-      with:
-        client-id: 7258cfca-e901-4077-8fba-224f8bc595e4
-        tenant-id: d048d6e2-6e9f-4af0-afcf-58a5ad036480
-        subscription-id: aff4caf1-7f59-4aec-bcc7-569eed5e05ea
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          client-id: 7258cfca-e901-4077-8fba-224f8bc595e4
+          tenant-id: d048d6e2-6e9f-4af0-afcf-58a5ad036480
+          subscription-id: aff4caf1-7f59-4aec-bcc7-569eed5e05ea
 
-    - name: Deploy to Azure Web App
-      uses: azure/webapps-deploy@v3
-      with:
-        app-name: corelord-production
-        package: .
