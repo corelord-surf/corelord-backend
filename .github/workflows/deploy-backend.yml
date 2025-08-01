@@ -1,10 +1,6 @@
-
-name: Deploy CoreLord Backend to Azure App Service
+name: Deploy Backend
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -14,7 +10,6 @@ permissions:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -32,14 +27,13 @@ jobs:
       - name: Login to Azure using OIDC
         uses: azure/login@v1
         with:
-          client-id: '7258cfca-e901-4077-8fba-224f8bc595e4'
-          tenant-id: 'd048d6e2-6e9f-4af0-afcf-58a5ad036480'
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: corelord-backend
-          slot-name: 'Production'
+          slot-name: Production
           package: .
