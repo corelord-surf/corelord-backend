@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import profileRouter from './routes/profile.js';
-// import verifyToken from './auth/verifyToken.js'; // Temporarily disabled
+import dashboardRouter from './routes/dashboard.js'; // New
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,16 +9,17 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Temporary mock user middleware (remove later when using verifyToken)
+// Temporary mock user middleware (remove once verifyToken is integrated)
 app.use((req, res, next) => {
   req.user = {
-    oid: 'mock-user-1234' // Match this to a record in your user-data.json if needed
+    oid: 'mock-user-1234'
   };
   next();
 });
 
-// Route without token validation for now
+// Route handlers
 app.use('/api/profile', profileRouter);
+app.use('/api/dashboard', dashboardRouter); // New
 
 app.get('/', (req, res) => {
   res.send('CoreLord backend is running.');
