@@ -9,9 +9,15 @@ router.use(verifyToken);
 router.get('/', async (req, res) => {
   try {
     const pool = await poolPromise;
+    const email = req.user?.preferred_username;
+
     const result = await pool.request()
-      .input('email', sql.NVarChar, req.user.preferred_username)
-      .query('SELECT FullName, Country, PhoneNumber FROM UserProfiles WHERE Email = @email');
+      .input('email', sql.NVarChar, email)
+      .query(`
+        SELECT FullName, Country, PhoneNumber
+        FROM UserProfiles
+        WHERE LOWER(Email) = LOWER(@email)
+      `);
 
     if (result.recordset.length === 0) {
       return res.status(404).json({ message: 'Profile not found' });
@@ -29,12 +35,16 @@ router.post('/', async (req, res) => {
   try {
     const pool = await poolPromise;
     const { name, country, phone } = req.body;
-    const email = req.user.preferred_username;
+    const email = req.user?.preferred_username;
 
-    // Check if user already exists
+    console.log('[POST /profile]', { name, country, phone, emailFromToken: email });
+
     const check = await pool.request()
       .input('email', sql.NVarChar, email)
-      .query('SELECT Id FROM UserProfiles WHERE Email = @email');
+      .query(`
+        SELECT Id FROM UserProfiles
+        WHERE LOWER(Email) = LOWER(@email)
+      `);
 
     if (check.recordset.length > 0) {
       // Update existing profile
@@ -45,8 +55,10 @@ router.post('/', async (req, res) => {
         .input('phoneNumber', sql.NVarChar, phone)
         .query(`
           UPDATE UserProfiles
-          SET FullName = @fullName, Country = @country, PhoneNumber = @phoneNumber
-          WHERE Email = @email
+          SET FullName = @fullName,
+              Country = @country,
+              PhoneNumber = @phoneNumber
+          WHERE LOWER(Email) = LOWER(@email)
         `);
     } else {
       // Insert new profile
@@ -56,8 +68,8 @@ router.post('/', async (req, res) => {
         .input('country', sql.NVarChar, country)
         .input('phoneNumber', sql.NVarChar, phone)
         .query(`
-          INSERT INTO UserProfiles (Email, FullName, Country, PhoneNumber)
-          VALUES (@email, @fullName, @country, @phoneNumber)
+          INSERT INTO UserProfiles (Email, FullName, Country, PhoneNumber, CreatedAt)
+          VALUES (@email, @fullName, @country, @phoneNumber, GETDATE())
         `);
     }
 
