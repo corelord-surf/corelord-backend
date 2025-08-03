@@ -1,51 +1,69 @@
 import express from 'express';
-import fs from 'fs-extra';
+import { sql, poolPromise } from '../db.js';
+import verifyToken from '../auth/verifyToken.js';
+
 const router = express.Router();
+router.use(verifyToken);
 
-const dataFile = './data/user-data.json';
-
-// GET: Fetch the current user's profile
+// GET: Retrieve the current user's profile
 router.get('/', async (req, res) => {
   try {
-    const data = await fs.readJson(dataFile);
-    const user = data.find(u => u.oid === req.user.oid);
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input('email', sql.NVarChar, req.user.preferred_username)
+      .query('SELECT FullName, Country, PhoneNumber FROM UserProfiles WHERE Email = @email');
 
-    if (!user) {
+    if (result.recordset.length === 0) {
       return res.status(404).json({ message: 'Profile not found' });
     }
 
-    res.json(user);
-  } catch (error) {
-    console.error('Error reading profile:', error);
+    res.status(200).json(result.recordset[0]);
+  } catch (err) {
+    console.error('Error retrieving profile:', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
 
-// POST: Update or create the user's profile
+// POST: Create or update the user's profile
 router.post('/', async (req, res) => {
   try {
-    const data = await fs.readJson(dataFile);
+    const pool = await poolPromise;
+    const { name, country, phone } = req.body;
+    const email = req.user.preferred_username;
 
-    const newProfile = {
-      oid: req.user.oid,  // Extracted from validated Entra ID token
-      name: req.body.name || '',
-      preferredBreak: req.body.preferredBreak || '',
-      availability: req.body.availability || []
-    };
+    // Check if user already exists
+    const check = await pool.request()
+      .input('email', sql.NVarChar, email)
+      .query('SELECT Id FROM UserProfiles WHERE Email = @email');
 
-    const existingIndex = data.findIndex(u => u.oid === req.user.oid);
-
-    if (existingIndex >= 0) {
-      data[existingIndex] = newProfile;
+    if (check.recordset.length > 0) {
+      // Update existing profile
+      await pool.request()
+        .input('email', sql.NVarChar, email)
+        .input('fullName', sql.NVarChar, name)
+        .input('country', sql.NVarChar, country)
+        .input('phoneNumber', sql.NVarChar, phone)
+        .query(`
+          UPDATE UserProfiles
+          SET FullName = @fullName, Country = @country, PhoneNumber = @phoneNumber
+          WHERE Email = @email
+        `);
     } else {
-      data.push(newProfile);
+      // Insert new profile
+      await pool.request()
+        .input('email', sql.NVarChar, email)
+        .input('fullName', sql.NVarChar, name)
+        .input('country', sql.NVarChar, country)
+        .input('phoneNumber', sql.NVarChar, phone)
+        .query(`
+          INSERT INTO UserProfiles (Email, FullName, Country, PhoneNumber)
+          VALUES (@email, @fullName, @country, @phoneNumber)
+        `);
     }
 
-    await fs.writeJson(dataFile, data, { spaces: 2 });
     res.status(200).json({ message: 'Profile saved successfully' });
-
-  } catch (error) {
-    console.error('Error saving profile:', error);
+  } catch (err) {
+    console.error('Error saving profile:', err);
     res.status(500).json({ message: 'Failed to save profile' });
   }
 });
