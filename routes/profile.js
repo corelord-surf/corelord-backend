@@ -14,7 +14,7 @@ router.get('/', async (req, res) => {
     const result = await pool.request()
       .input('email', sql.NVarChar, email)
       .query(`
-        SELECT Email, FullName, Country, PhoneNumber
+        SELECT FullName, Country, PhoneNumber, Email
         FROM UserProfiles
         WHERE LOWER(Email) = LOWER(@email)
       `);
@@ -23,7 +23,13 @@ router.get('/', async (req, res) => {
       return res.status(404).json({ message: 'Profile not found' });
     }
 
-    res.status(200).json(result.recordset[0]);
+    const profile = result.recordset[0];
+    res.status(200).json({
+      fullName: profile.FullName ?? '',
+      country: profile.Country ?? '',
+      phoneNumber: profile.PhoneNumber ?? '',
+      email: profile.Email ?? ''
+    });
   } catch (err) {
     console.error('Error retrieving profile:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -37,7 +43,7 @@ router.post('/', async (req, res) => {
     const { name, country, phone } = req.body;
     const email = req.user?.preferred_username;
 
-    console.log('[POST /profile]', { name, country, phone, emailFromToken: email });
+    console.log('[POST /profile]', { name, country, phone, email });
 
     const check = await pool.request()
       .input('email', sql.NVarChar, email)
@@ -47,7 +53,6 @@ router.post('/', async (req, res) => {
       `);
 
     if (check.recordset.length > 0) {
-      // Update existing profile
       await pool.request()
         .input('email', sql.NVarChar, email)
         .input('fullName', sql.NVarChar, name)
@@ -61,7 +66,6 @@ router.post('/', async (req, res) => {
           WHERE LOWER(Email) = LOWER(@email)
         `);
     } else {
-      // Insert new profile
       await pool.request()
         .input('email', sql.NVarChar, email)
         .input('fullName', sql.NVarChar, name)
