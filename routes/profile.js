@@ -14,7 +14,7 @@ router.get('/', async (req, res) => {
     const result = await pool.request()
       .input('email', sql.NVarChar, email)
       .query(`
-        SELECT FullName, Country, PhoneNumber, Email
+        SELECT FullName, Country, PhoneNumber
         FROM UserProfiles
         WHERE LOWER(Email) = LOWER(@email)
       `);
@@ -24,11 +24,13 @@ router.get('/', async (req, res) => {
     }
 
     const profile = result.recordset[0];
+
+    // Return property names that match frontend expectations
     res.status(200).json({
-      fullName: profile.FullName ?? '',
-      country: profile.Country ?? '',
-      phoneNumber: profile.PhoneNumber ?? '',
-      email: profile.Email ?? ''
+      name: profile.FullName,
+      country: profile.Country,
+      phone: profile.PhoneNumber,
+      email
     });
   } catch (err) {
     console.error('Error retrieving profile:', err);
@@ -43,7 +45,7 @@ router.post('/', async (req, res) => {
     const { name, country, phone } = req.body;
     const email = req.user?.preferred_username;
 
-    console.log('[POST /profile]', { name, country, phone, email });
+    console.log('[POST /profile]', { name, country, phone, emailFromToken: email });
 
     const check = await pool.request()
       .input('email', sql.NVarChar, email)
@@ -53,6 +55,7 @@ router.post('/', async (req, res) => {
       `);
 
     if (check.recordset.length > 0) {
+      // Update existing profile
       await pool.request()
         .input('email', sql.NVarChar, email)
         .input('fullName', sql.NVarChar, name)
@@ -66,6 +69,7 @@ router.post('/', async (req, res) => {
           WHERE LOWER(Email) = LOWER(@email)
         `);
     } else {
+      // Insert new profile
       await pool.request()
         .input('email', sql.NVarChar, email)
         .input('fullName', sql.NVarChar, name)
