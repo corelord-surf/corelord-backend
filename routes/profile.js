@@ -14,7 +14,7 @@ router.get('/', async (req, res) => {
     const result = await pool.request()
       .input('email', sql.NVarChar, email)
       .query(`
-        SELECT FullName, Country, PhoneNumber
+        SELECT Email, FullName, Country, PhoneNumber
         FROM UserProfiles
         WHERE LOWER(Email) = LOWER(@email)
       `);
