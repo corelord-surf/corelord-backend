@@ -21,18 +21,19 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install deps (backend)
-        working-directory: ./corelord-backend
+      # Install only at repo root (where package.json is)
+      - name: Install deps
         run: npm ci
 
+      # Build if you ever add one (noop otherwise)
       - name: Build (noop if not present)
-        working-directory: ./corelord-backend
         run: npm run build --if-present
 
-      # Optional: zip the backend folder for run-from-package
+      # Create a small deploy zip (exclude CI metadata)
       - name: Create deploy zip
-        working-directory: ./corelord-backend
-        run: zip -r ../corelord-backend.zip .
+        run: |
+          zip -r deploy.zip . \
+            -x ".git/*" ".github/*" "node_modules/*"
 
       - name: Azure login (OIDC)
         uses: azure/login@v1
@@ -45,6 +46,4 @@ jobs:
         uses: azure/webapps-deploy@v3
         with:
           app-name: corelord-backend
-          # You can deploy the folder directly OR the zip we created.
-          # package: ./corelord-backend
-          package: ./corelord-backend.zip
+          package: ./deploy.zip
