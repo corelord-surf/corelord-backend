@@ -2,38 +2,27 @@
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 
-//
-// === Your tenant & API app settings ===
-//
-const TENANT_ID = 'd048d6e2-6e9f-4af0-afcf-58a5ad036480';                  // Azure AD tenant
-const API_APP_ID = '207b8fba-ea72-43e3-8c90-b3a39e58f5fc';                 // Backend App Registration (Application (client) ID)
-const API_APP_URI = `api://${API_APP_ID}`;                                 // App ID URI (Expose an API)
+const TENANT = 'd048d6e2-6e9f-4af0-afcf-58a5ad036480';
+const API_APP_ID = '207b8fba-ea72-43e3-8c90-b3a39e58f5fc'; // your API app (client) ID
 
-//
-// Accept both v2 and v1 issuers (the signing keys are the same)
-//
-const ACCEPTED_ISSUERS = [
-  `https://login.microsoftonline.com/${TENANT_ID}/v2.0`,
-  `https://sts.windows.net/${TENANT_ID}/`,
+// Accept both audience forms that AAD may issue
+const AUDIENCES = [
+  `api://${API_APP_ID}`,
+  API_APP_ID
 ];
 
-//
-// Accept both GUID and api:// GUID as audience
-//
-const ACCEPTED_AUDIENCES = [
-  API_APP_ID,
-  API_APP_URI,
-  `${API_APP_URI}/.default`,
+// Accept both v2 and v1 issuers
+const ISSUERS = [
+  `https://login.microsoftonline.com/${TENANT}/v2.0`,
+  `https://sts.windows.net/${TENANT}/`
 ];
 
-//
-// JWKS (v2 endpoint works for both; shares keys with v1)
-//
+// JWKS (works for both v1 & v2 tokens)
 const client = jwksClient({
-  jwksUri: `https://login.microsoftonline.com/${TENANT_ID}/discovery/v2.0/keys`,
+  jwksUri: `https://login.microsoftonline.com/${TENANT}/discovery/v2.0/keys`,
   cache: true,
   cacheMaxEntries: 5,
-  cacheMaxAge: 10 * 60 * 1000,
+  cacheMaxAge: 10 * 60 * 1000
 });
 
 function getKey(header, callback) {
@@ -45,21 +34,21 @@ function getKey(header, callback) {
 }
 
 export default function verifyToken(req, res, next) {
-  const authHeader = req.headers.authorization || '';
-  if (!authHeader.startsWith('Bearer ')) {
+  const auth = req.headers.authorization || '';
+  if (!auth.startsWith('Bearer ')) {
     return res.status(401).send('Missing or invalid token');
   }
 
-  const token = authHeader.slice('Bearer '.length);
+  const token = auth.slice('Bearer '.length);
 
   jwt.verify(
     token,
     getKey,
     {
       algorithms: ['RS256'],
-      issuer: ACCEPTED_ISSUERS,
-      audience: ACCEPTED_AUDIENCES,
-      ignoreExpiration: false,
+      audience: AUDIENCES,
+      issuer: ISSUERS,
+      clockTolerance: 5 // seconds
     },
     (err, decoded) => {
       if (err) {
@@ -67,16 +56,19 @@ export default function verifyToken(req, res, next) {
         return res.status(403).send('Token verification failed');
       }
 
-      // Optional diagnostics you can keep for now:
-      if (decoded?.iss && !ACCEPTED_ISSUERS.includes(decoded.iss)) {
-        console.warn('Issuer/tenant/version check (diagnostic):', {
-          iss: decoded.iss,
-          tid: decoded.tid,
-          ver: decoded.ver,
-        });
+      // Optional: enforce the scope your SPA requests
+      // v2 = 'scp', v1 = 'roles'
+      const scp = decoded.scp || '';
+      const roles = decoded.roles || [];
+      const hasScope =
+        (typeof scp === 'string' && scp.split(' ').includes('user_impersonation')) ||
+        (Array.isArray(roles) && roles.includes('user_impersonation'));
+
+      if (!hasScope) {
+        return res.status(403).send('Required scope missing');
       }
 
-      req.user = decoded; // contains oid, tid, ver, upn/preferred_username, etc.
+      req.user = decoded;
       next();
     }
   );
