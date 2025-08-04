@@ -1,3 +1,4 @@
+// routes/profile.js
 import express from 'express';
 import { sql, poolPromise } from '../db.js';
 import verifyToken from '../auth/verifyToken.js';
@@ -8,13 +9,15 @@ router.use(verifyToken);
 // GET: Retrieve the current user's profile
 router.get('/', async (req, res) => {
   try {
-    const pool = await poolPromise;
     const email = req.user?.preferred_username;
+    if (!email) return res.status(400).json({ message: 'Email not found in token' });
 
-    const result = await pool.request()
+    const pool = await poolPromise;
+    const result = await pool
+      .request()
       .input('email', sql.NVarChar, email)
       .query(`
-        SELECT FullName, Country, PhoneNumber
+        SELECT TOP 1 FullName, Country, PhoneNumber
         FROM UserProfiles
         WHERE LOWER(Email) = LOWER(@email)
       `);
@@ -23,44 +26,43 @@ router.get('/', async (req, res) => {
       return res.status(404).json({ message: 'Profile not found' });
     }
 
-    const profile = result.recordset[0];
-
-    // Return property names that match frontend expectations
-    res.status(200).json({
-      name: profile.FullName,
-      country: profile.Country,
-      phone: profile.PhoneNumber,
-      email
+    const row = result.recordset[0];
+    return res.status(200).json({
+      name: row.FullName || null,
+      country: row.Country || null,
+      phone: row.PhoneNumber || null,
+      email,
     });
   } catch (err) {
     console.error('Error retrieving profile:', err);
-    res.status(500).json({ message: 'Internal server error' });
+    return res.status(500).json({ message: 'Internal server error' });
   }
 });
 
 // POST: Create or update the user's profile
 router.post('/', async (req, res) => {
   try {
-    const pool = await poolPromise;
-    const { name, country, phone } = req.body;
     const email = req.user?.preferred_username;
+    if (!email) return res.status(400).json({ message: 'Email not found in token' });
 
-    console.log('[POST /profile]', { name, country, phone, emailFromToken: email });
+    const { name, country, phone } = req.body || {};
+    const pool = await poolPromise;
 
-    const check = await pool.request()
+    // Upsert pattern
+    const check = await pool
+      .request()
       .input('email', sql.NVarChar, email)
       .query(`
-        SELECT Id FROM UserProfiles
-        WHERE LOWER(Email) = LOWER(@email)
+        SELECT Id FROM UserProfiles WHERE LOWER(Email) = LOWER(@email)
       `);
 
     if (check.recordset.length > 0) {
-      // Update existing profile
-      await pool.request()
+      await pool
+        .request()
         .input('email', sql.NVarChar, email)
-        .input('fullName', sql.NVarChar, name)
-        .input('country', sql.NVarChar, country)
-        .input('phoneNumber', sql.NVarChar, phone)
+        .input('fullName', sql.NVarChar, name || null)
+        .input('country', sql.NVarChar, country || null)
+        .input('phoneNumber', sql.NVarChar, phone || null)
         .query(`
           UPDATE UserProfiles
           SET FullName = @fullName,
@@ -69,22 +71,22 @@ router.post('/', async (req, res) => {
           WHERE LOWER(Email) = LOWER(@email)
         `);
     } else {
-      // Insert new profile
-      await pool.request()
+      await pool
+        .request()
         .input('email', sql.NVarChar, email)
-        .input('fullName', sql.NVarChar, name)
-        .input('country', sql.NVarChar, country)
-        .input('phoneNumber', sql.NVarChar, phone)
+        .input('fullName', sql.NVarChar, name || null)
+        .input('country', sql.NVarChar, country || null)
+        .input('phoneNumber', sql.NVarChar, phone || null)
         .query(`
           INSERT INTO UserProfiles (Email, FullName, Country, PhoneNumber, CreatedAt)
           VALUES (@email, @fullName, @country, @phoneNumber, GETDATE())
         `);
     }
 
-    res.status(200).json({ message: 'Profile saved successfully' });
+    return res.status(200).json({ message: 'Profile saved successfully' });
   } catch (err) {
     console.error('Error saving profile:', err);
-    res.status(500).json({ message: 'Failed to save profile' });
+    return res.status(500).json({ message: 'Failed to save profile' });
   }
 });
 

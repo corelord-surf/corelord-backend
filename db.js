@@ -1,5 +1,7 @@
-const sql = require('mssql');
+// db.js
+import sql from 'mssql';
 
+// Azure SQL config for your server & DB
 const config = {
   user: 'sqladmin',
   password: '6dHAy!g#qa^tSuBR',
@@ -7,30 +9,20 @@ const config = {
   database: 'CoreLordDB',
   options: {
     encrypt: true,
-    trustServerCertificate: false
-  }
+    trustServerCertificate: false,
+  },
 };
 
-async function insertUserProfile(profile) {
-  try {
-    const pool = await sql.connect(config);
-    const result = await pool.request()
-      .input('Email', sql.NVarChar(256), profile.email)
-      .input('FullName', sql.NVarChar(100), profile.fullName)
-      .input('Country', sql.NVarChar(100), profile.country)
-      .input('PhoneNumber', sql.NVarChar(50), profile.phoneNumber)
-      .query(`
-        INSERT INTO UserProfiles (Email, FullName, Country, PhoneNumber)
-        VALUES (@Email, @FullName, @Country, @PhoneNumber)
-      `);
-
-    return result;
-  } catch (err) {
-    console.error('SQL error', err);
+// Create and share one connection pool across the app
+const poolPromise = new sql.ConnectionPool(config)
+  .connect()
+  .then((pool) => {
+    console.log('Connected to SQL database');
+    return pool;
+  })
+  .catch((err) => {
+    console.error('SQL connection error:', err);
     throw err;
-  }
-}
+  });
 
-module.exports = {
-  insertUserProfile
-};
+export { sql, poolPromise };

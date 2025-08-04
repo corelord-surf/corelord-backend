@@ -1,28 +1,29 @@
+// index.js
 import express from 'express';
 import cors from 'cors';
 import profileRouter from './routes/profile.js';
-import dashboardRouter from './routes/dashboard.js'; // New
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+// Allow your Static Web App to call the API
+app.use(
+  cors({
+    origin: [
+      'https://calm-coast-025fe8203.2.azurestaticapps.net',
+    ],
+    methods: ['GET', 'POST', 'OPTIONS'],
+  })
+);
+
 app.use(express.json());
 
-// Temporary mock user middleware (remove once verifyToken is integrated)
-app.use((req, res, next) => {
-  req.user = {
-    oid: 'mock-user-1234'
-  };
-  next();
-});
-
-// Route handlers
+// IMPORTANT: no mock user middleware here — rely on verifyToken inside routes
 app.use('/api/profile', profileRouter);
-app.use('/api/dashboard', dashboardRouter); // New
 
-app.get('/', (req, res) => {
-  res.send('CoreLord backend is running.');
+// Simple health endpoint
+app.get('/', (_req, res) => {
+  res.send('corelord backend is running.');
 });
 
 app.listen(PORT, () => {
