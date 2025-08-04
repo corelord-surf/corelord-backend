@@ -9,15 +9,13 @@ router.use(verifyToken);
 // GET: Retrieve the current user's profile
 router.get('/', async (req, res) => {
   try {
-    const email = req.user?.preferred_username;
-    if (!email) return res.status(400).json({ message: 'Email not found in token' });
-
     const pool = await poolPromise;
-    const result = await pool
-      .request()
+    const email = req.user?.preferred_username;
+
+    const result = await pool.request()
       .input('email', sql.NVarChar, email)
       .query(`
-        SELECT TOP 1 FullName, Country, PhoneNumber
+        SELECT FullName, Country, PhoneNumber
         FROM UserProfiles
         WHERE LOWER(Email) = LOWER(@email)
       `);
@@ -27,12 +25,16 @@ router.get('/', async (req, res) => {
     }
 
     const row = result.recordset[0];
-    return res.status(200).json({
-      name: row.FullName || null,
-      country: row.Country || null,
-      phone: row.PhoneNumber || null,
+
+    // Always return these four keys for the frontend
+    const payload = {
+      name: row.FullName ?? null,
       email,
-    });
+      country: row.Country ?? null,
+      phone: row.PhoneNumber ?? null,
+    };
+
+    return res.status(200).json(payload);
   } catch (err) {
     console.error('Error retrieving profile:', err);
     return res.status(500).json({ message: 'Internal server error' });
@@ -42,27 +44,24 @@ router.get('/', async (req, res) => {
 // POST: Create or update the user's profile
 router.post('/', async (req, res) => {
   try {
-    const email = req.user?.preferred_username;
-    if (!email) return res.status(400).json({ message: 'Email not found in token' });
-
-    const { name, country, phone } = req.body || {};
     const pool = await poolPromise;
+    const { name, country, phone } = req.body;
+    const email = req.user?.preferred_username;
 
-    // Upsert pattern
-    const check = await pool
-      .request()
+    // Upsert by email (case-insensitive)
+    const check = await pool.request()
       .input('email', sql.NVarChar, email)
       .query(`
-        SELECT Id FROM UserProfiles WHERE LOWER(Email) = LOWER(@email)
+        SELECT Id FROM UserProfiles
+        WHERE LOWER(Email) = LOWER(@email)
       `);
 
     if (check.recordset.length > 0) {
-      await pool
-        .request()
+      await pool.request()
         .input('email', sql.NVarChar, email)
-        .input('fullName', sql.NVarChar, name || null)
-        .input('country', sql.NVarChar, country || null)
-        .input('phoneNumber', sql.NVarChar, phone || null)
+        .input('fullName', sql.NVarChar, name)
+        .input('country', sql.NVarChar, country)
+        .input('phoneNumber', sql.NVarChar, phone)
         .query(`
           UPDATE UserProfiles
           SET FullName = @fullName,
@@ -71,12 +70,11 @@ router.post('/', async (req, res) => {
           WHERE LOWER(Email) = LOWER(@email)
         `);
     } else {
-      await pool
-        .request()
+      await pool.request()
         .input('email', sql.NVarChar, email)
-        .input('fullName', sql.NVarChar, name || null)
-        .input('country', sql.NVarChar, country || null)
-        .input('phoneNumber', sql.NVarChar, phone || null)
+        .input('fullName', sql.NVarChar, name)
+        .input('country', sql.NVarChar, country)
+        .input('phoneNumber', sql.NVarChar, phone)
         .query(`
           INSERT INTO UserProfiles (Email, FullName, Country, PhoneNumber, CreatedAt)
           VALUES (@email, @fullName, @country, @phoneNumber, GETDATE())
