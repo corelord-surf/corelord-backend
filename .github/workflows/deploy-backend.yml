@@ -1,49 +1,35 @@
-name: Deploy CoreLord Backend
-
+name: Deploy Backend
 on:
-  push:
-    branches: [ main ]
+  push: { branches: [main] }
   workflow_dispatch:
-
-permissions:
-  id-token: write
-  contents: read
-
+permissions: { id-token: write, contents: read }
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      # Install only at repo root (where package.json is)
-      - name: Install deps
-        run: npm ci
-
-      # Build if you ever add one (noop otherwise)
-      - name: Build (noop if not present)
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20.x', cache: 'npm' }
+      - name: Install deps (lockfile)
+        run: npm ci --no-audit --no-fund
+      - name: Build (noop if absent)
         run: npm run build --if-present
-
-      # Create a small deploy zip (exclude CI metadata)
-      - name: Create deploy zip
+      - name: Prepare deployment package
         run: |
-          zip -r deploy.zip . \
-            -x ".git/*" ".github/*" "node_modules/*"
-
+          mkdir -p deploy
+          rsync -a --delete --exclude ".git" --exclude ".github" --exclude "deploy" ./ ./deploy/
+          cd deploy
+          npm ci --omit=dev --no-audit --no-fund
+          zip -r ../deploy.zip . -x "*.git*" ".github/*"
       - name: Azure login (OIDC)
         uses: azure/login@v1
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Deploy to Azure Web App (corelord-backend)
+      - name: Deploy to Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: corelord-backend
+          slot-name: Production
           package: ./deploy.zip
