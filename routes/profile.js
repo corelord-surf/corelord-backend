@@ -12,6 +12,12 @@ router.get('/', async (req, res) => {
     const pool = await poolPromise;
     const email = req.user?.preferred_username;
 
+    if (!email) {
+      return res.status(400).json({ message: 'Email not found in token.' });
+    }
+
+    console.log('[GET /api/profile] user email:', email);
+
     const result = await pool.request()
       .input('email', sql.NVarChar, email)
       .query(`
@@ -21,6 +27,8 @@ router.get('/', async (req, res) => {
       `);
 
     if (result.recordset.length === 0) {
+      // no-cache + explicit not found payload
+      res.set('Cache-Control', 'no-store');
       return res.status(404).json({ message: 'Profile not found' });
     }
 
@@ -34,6 +42,7 @@ router.get('/', async (req, res) => {
       phone: row.PhoneNumber ?? null,
     };
 
+    res.set('Cache-Control', 'no-store');
     return res.status(200).json(payload);
   } catch (err) {
     console.error('Error retrieving profile:', err);
@@ -48,6 +57,12 @@ router.post('/', async (req, res) => {
     const { name, country, phone } = req.body;
     const email = req.user?.preferred_username;
 
+    if (!email) {
+      return res.status(400).json({ message: 'Email not found in token.' });
+    }
+
+    console.log('[POST /api/profile] upsert for:', email);
+
     // Upsert by email (case-insensitive)
     const check = await pool.request()
       .input('email', sql.NVarChar, email)
@@ -59,9 +74,9 @@ router.post('/', async (req, res) => {
     if (check.recordset.length > 0) {
       await pool.request()
         .input('email', sql.NVarChar, email)
-        .input('fullName', sql.NVarChar, name)
-        .input('country', sql.NVarChar, country)
-        .input('phoneNumber', sql.NVarChar, phone)
+        .input('fullName', sql.NVarChar, name ?? null)
+        .input('country', sql.NVarChar, country ?? null)
+        .input('phoneNumber', sql.NVarChar, phone ?? null)
         .query(`
           UPDATE UserProfiles
           SET FullName = @fullName,
@@ -72,9 +87,9 @@ router.post('/', async (req, res) => {
     } else {
       await pool.request()
         .input('email', sql.NVarChar, email)
-        .input('fullName', sql.NVarChar, name)
-        .input('country', sql.NVarChar, country)
-        .input('phoneNumber', sql.NVarChar, phone)
+        .input('fullName', sql.NVarChar, name ?? null)
+        .input('country', sql.NVarChar, country ?? null)
+        .input('phoneNumber', sql.NVarChar, phone ?? null)
         .query(`
           INSERT INTO UserProfiles (Email, FullName, Country, PhoneNumber, CreatedAt)
           VALUES (@email, @fullName, @country, @phoneNumber, GETDATE())

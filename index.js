@@ -6,6 +6,16 @@ import profileRouter from './routes/profile.js';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// add a build header to every response so we can see which instance answered
+app.use((req, res, next) => {
+  const buildId =
+    process.env.WEBSITE_BUILD_ID ||
+    process.env.SCM_BUILD ||
+    new Date().toISOString();
+  res.set('x-corelord-build', String(buildId));
+  next();
+});
+
 // Allow your Static Web App to call the API
 app.use(
   cors({
