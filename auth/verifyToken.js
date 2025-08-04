@@ -9,7 +9,7 @@ const client = jwksClient({
   jwksUri: `https://login.microsoftonline.com/${TENANT}/discovery/v2.0/keys`,
   cache: true,
   cacheMaxEntries: 5,
-  cacheMaxAge: 10 * 60 * 1000, // 10 minutes
+  cacheMaxAge: 10 * 60 * 1000,
 });
 
 function getKey(header, callback) {
@@ -28,20 +28,44 @@ export default function verifyToken(req, res, next) {
 
   const token = authHeader.slice('Bearer '.length);
 
+  // First: verify signature & audience with JWKS
   jwt.verify(
     token,
     getKey,
     {
       audience: AUDIENCE,
-      issuer: `https://login.microsoftonline.com/${TENANT}/v2.0`,
       algorithms: ['RS256'],
+      // NOTE: do NOT pass `issuer` here; we'll validate it ourselves below.
     },
     (err, decoded) => {
       if (err) {
-        console.error('Token verification failed:', err.message);
+        // Log actual issuer to help diagnose
+        try {
+          const peek = jwt.decode(token) || {};
+          console.error('Token verification failed:', err.message, '| iss:', peek.iss, '| tid:', peek.tid, '| ver:', peek.ver);
+        } catch (_) {}
         return res.status(403).send('Token verification failed');
       }
-      req.user = decoded; // includes preferred_username, name, oid, etc.
+
+      // Additional hard checks: correct tenant + acceptable issuer + v2 if present
+      const iss = decoded.iss || '';
+      const tid = decoded.tid || '';
+      const ver = decoded.ver || '';
+
+      const allowedIssuers = new Set([
+        `https://login.microsoftonline.com/${TENANT}/v2.0`,
+        `https://sts.windows.net/${TENANT}/`,
+      ]);
+
+      const issuerOk = allowedIssuers.has(iss);
+      const tenantOk = tid === TENANT;
+
+      if (!tenantOk || !issuerOk || (ver && ver !== '2.0')) {
+        console.error('Issuer/tenant/version check failed', { iss, tid, ver });
+        return res.status(403).send('Token issuer/tenant invalid');
+      }
+
+      req.user = decoded; // preferred_username, name, oid, etc.
       next();
     }
   );
