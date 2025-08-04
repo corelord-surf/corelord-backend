@@ -4,21 +4,40 @@ import { sql, poolPromise } from '../db.js';
 import verifyToken from '../auth/verifyToken.js';
 
 const router = express.Router();
+
+// Protect everything under /api/profile
 router.use(verifyToken);
+
+/**
+ * Helper: extract an email/username from either v1 or v2 AAD tokens.
+ * v2: preferred_username or email
+ * v1: upn or unique_name
+ */
+function getEmailFromToken(claims = {}) {
+  return (
+    claims.preferred_username ||
+    claims.email ||
+    claims.upn ||
+    claims.unique_name ||
+    null
+  );
+}
 
 // GET: Retrieve the current user's profile
 router.get('/', async (req, res) => {
   try {
     const pool = await poolPromise;
-    const email = req.user?.preferred_username;
+    const email = getEmailFromToken(req.user);
 
     if (!email) {
-      return res.status(400).json({ message: 'Email not found in token.' });
+      console.warn('[GET /profile] Missing email claim in token', {
+        tokenKeys: Object.keys(req.user || {}),
+      });
+      return res.status(400).json({ message: 'Email claim missing in token' });
     }
 
-    console.log('[GET /api/profile] user email:', email);
-
-    const result = await pool.request()
+    const result = await pool
+      .request()
       .input('email', sql.NVarChar, email)
       .query(`
         SELECT FullName, Country, PhoneNumber
@@ -27,25 +46,19 @@ router.get('/', async (req, res) => {
       `);
 
     if (result.recordset.length === 0) {
-      // no-cache + explicit not found payload
-      res.set('Cache-Control', 'no-store');
       return res.status(404).json({ message: 'Profile not found' });
     }
 
     const row = result.recordset[0];
 
-    // Always return these four keys for the frontend
-    const payload = {
+    return res.status(200).json({
       name: row.FullName ?? null,
       email,
       country: row.Country ?? null,
       phone: row.PhoneNumber ?? null,
-    };
-
-    res.set('Cache-Control', 'no-store');
-    return res.status(200).json(payload);
+    });
   } catch (err) {
-    console.error('Error retrieving profile:', err);
+    console.error('[GET /profile] Error:', err);
     return res.status(500).json({ message: 'Internal server error' });
   }
 });
@@ -54,17 +67,24 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const pool = await poolPromise;
-    const { name, country, phone } = req.body;
-    const email = req.user?.preferred_username;
+    const email = getEmailFromToken(req.user);
 
     if (!email) {
-      return res.status(400).json({ message: 'Email not found in token.' });
+      console.warn('[POST /profile] Missing email claim in token', {
+        tokenKeys: Object.keys(req.user || {}),
+      });
+      return res.status(400).json({ message: 'Email claim missing in token' });
     }
 
-    console.log('[POST /api/profile] upsert for:', email);
+    const { name, country, phone } = req.body || {};
+    // Basic validation
+    if (!name || !country) {
+      return res.status(400).json({ message: 'Name and country are required' });
+    }
 
-    // Upsert by email (case-insensitive)
-    const check = await pool.request()
+    // Does a row already exist?
+    const check = await pool
+      .request()
       .input('email', sql.NVarChar, email)
       .query(`
         SELECT Id FROM UserProfiles
@@ -72,11 +92,12 @@ router.post('/', async (req, res) => {
       `);
 
     if (check.recordset.length > 0) {
-      await pool.request()
+      await pool
+        .request()
         .input('email', sql.NVarChar, email)
-        .input('fullName', sql.NVarChar, name ?? null)
-        .input('country', sql.NVarChar, country ?? null)
-        .input('phoneNumber', sql.NVarChar, phone ?? null)
+        .input('fullName', sql.NVarChar, name)
+        .input('country', sql.NVarChar, country)
+        .input('phoneNumber', sql.NVarChar, phone || null)
         .query(`
           UPDATE UserProfiles
           SET FullName = @fullName,
@@ -85,11 +106,12 @@ router.post('/', async (req, res) => {
           WHERE LOWER(Email) = LOWER(@email)
         `);
     } else {
-      await pool.request()
+      await pool
+        .request()
         .input('email', sql.NVarChar, email)
-        .input('fullName', sql.NVarChar, name ?? null)
-        .input('country', sql.NVarChar, country ?? null)
-        .input('phoneNumber', sql.NVarChar, phone ?? null)
+        .input('fullName', sql.NVarChar, name)
+        .input('country', sql.NVarChar, country)
+        .input('phoneNumber', sql.NVarChar, phone || null)
         .query(`
           INSERT INTO UserProfiles (Email, FullName, Country, PhoneNumber, CreatedAt)
           VALUES (@email, @fullName, @country, @phoneNumber, GETDATE())
@@ -98,7 +120,7 @@ router.post('/', async (req, res) => {
 
     return res.status(200).json({ message: 'Profile saved successfully' });
   } catch (err) {
-    console.error('Error saving profile:', err);
+    console.error('[POST /profile] Error:', err);
     return res.status(500).json({ message: 'Failed to save profile' });
   }
 });
