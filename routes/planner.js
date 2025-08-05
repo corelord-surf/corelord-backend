@@ -18,11 +18,7 @@ function getEmailFromToken(claims = {}) {
 
 // GET /api/planner/regions
 router.get('/regions', async (_req, res) => {
-  // Simple static list for now
-  res.json([
-    { name: 'Ericeira' },
-    { name: 'Torquay' }
-  ]);
+  res.json([{ name: 'Ericeira' }, { name: 'Torquay' }]);
 });
 
 // GET /api/planner/breaks?region=Ericeira
@@ -64,14 +60,13 @@ router.get('/prefs', async (req, res) => {
         SELECT TOP 1
           MinHeightM, MaxHeightM, MinPeriodS, MaxPeriodS,
           AllowedSwellDirs, MaxWindKt, AllowedWindDirs,
-          MinTideM, MaxTideM
+          MinTideM, MaxTideM, UpdatedAt
         FROM dbo.UserBreakPrefs
         WHERE UserEmail = @email AND BreakId = @breakId
         ORDER BY UpdatedAt DESC
       `);
 
     if (result.recordset.length === 0) {
-      // return 204 so the browser does not flag a network error
       return res.status(204).end();
     }
 
@@ -83,7 +78,6 @@ router.get('/prefs', async (req, res) => {
 });
 
 // POST /api/planner/prefs
-// { breakId, minHeight, maxHeight, minPeriod, maxPeriod, swellDirs[], maxWind, windDirs[], minTide, maxTide }
 router.post('/prefs', async (req, res) => {
   const email = getEmailFromToken(req.user);
   if (!email) return res.status(400).json({ message: 'Email claim missing in token' });
@@ -98,7 +92,6 @@ router.post('/prefs', async (req, res) => {
 
   if (!breakId) return res.status(400).json({ message: 'breakId is required' });
 
-  // Basic sanity checks
   if (minHeight != null && maxHeight != null && Number(minHeight) > Number(maxHeight)) {
     return res.status(400).json({ message: 'Min height must be less than max height' });
   }
@@ -112,7 +105,6 @@ router.post('/prefs', async (req, res) => {
   try {
     const pool = await poolPromise;
 
-    // Upsert by email + break
     const check = await pool.request()
       .input('email', sql.NVarChar, email)
       .input('breakId', sql.Int, breakId)
@@ -178,6 +170,72 @@ router.post('/prefs', async (req, res) => {
   } catch (err) {
     console.error('[POST /planner/prefs] Error:', err);
     res.status(500).json({ message: 'Failed to save preferences' });
+  }
+});
+
+// NEW  list all saved prefs for this user, optional region filter
+// GET /api/planner/prefs/list            returns all
+// GET /api/planner/prefs/list?region=Ericeira   filter by region
+router.get('/prefs/list', async (req, res) => {
+  const email = getEmailFromToken(req.user);
+  const region = req.query.region || null;
+  if (!email) return res.status(400).json({ message: 'Email claim missing in token' });
+
+  try {
+    const pool = await poolPromise;
+    const request = pool.request().input('email', sql.NVarChar, email);
+    let where = 'WHERE p.UserEmail = @email';
+    if (region) {
+      request.input('region', sql.NVarChar, region);
+      where += ' AND b.Region = @region';
+    }
+
+    const result = await request.query(`
+      SELECT
+        p.BreakId,
+        b.Name    AS BreakName,
+        b.Region  AS Region,
+        p.MinHeightM, p.MaxHeightM,
+        p.MinPeriodS, p.MaxPeriodS,
+        p.AllowedSwellDirs, p.MaxWindKt, p.AllowedWindDirs,
+        p.MinTideM, p.MaxTideM,
+        p.UpdatedAt
+      FROM dbo.UserBreakPrefs p
+      INNER JOIN dbo.SurfBreaks b ON b.Id = p.BreakId
+      ${where}
+      ORDER BY b.Region, b.Name
+    `);
+
+    if (result.recordset.length === 0) return res.status(204).end();
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('[GET /planner/prefs/list] Error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// NEW  delete prefs for a break for this user
+// DELETE /api/planner/prefs?breakId=123
+router.delete('/prefs', async (req, res) => {
+  const email = getEmailFromToken(req.user);
+  const breakId = parseInt(req.query.breakId, 10);
+
+  if (!email) return res.status(400).json({ message: 'Email claim missing in token' });
+  if (!breakId) return res.status(400).json({ message: 'breakId is required' });
+
+  try {
+    const pool = await poolPromise;
+    await pool.request()
+      .input('email', sql.NVarChar, email)
+      .input('breakId', sql.Int, breakId)
+      .query(`
+        DELETE FROM dbo.UserBreakPrefs
+        WHERE UserEmail = @email AND BreakId = @breakId
+      `);
+    res.status(204).end();
+  } catch (err) {
+    console.error('[DELETE /planner/prefs] Error:', err);
+    res.status(500).json({ message: 'Failed to delete preferences' });
   }
 });
 
