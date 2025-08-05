@@ -115,7 +115,7 @@ router.get('/timeseries', async (req, res) => {
   }
 });
 
-// ✅ NEW: Pre-cache route
+// ✅ Enhanced: Pre-cache route with error tracking
 router.get('/precache', async (req, res) => {
   try {
     const pool = await poolPromise;
@@ -125,6 +125,7 @@ router.get('/precache', async (req, res) => {
     `);
     const breaks = result.recordset;
     const hours = 168; // 7 days
+    const failures = [];
 
     for (const brk of breaks) {
       try {
@@ -132,10 +133,16 @@ router.get('/precache', async (req, res) => {
         await storeCachedForecast(brk.Id, hours, data);
       } catch (err) {
         console.error(`[precache] Failed for break ${brk.Id}:`, err.message);
+        failures.push({ breakId: brk.Id, error: err.message });
       }
     }
 
-    res.status(200).json({ message: 'Precache complete', totalBreaks: breaks.length });
+    res.status(200).json({
+      message: 'Precache complete',
+      totalBreaks: breaks.length,
+      failed: failures.length,
+      failures
+    });
   } catch (err) {
     console.error('[GET /forecast/precache] Error:', err);
     res.status(500).json({ error: 'Precache failed', details: err.message });
