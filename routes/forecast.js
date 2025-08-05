@@ -4,11 +4,6 @@ import { sql, poolPromise } from '../db.js';
 import fetch from 'node-fetch';
 
 const router = express.Router();
-
-/**
- * Small in memory cache to reduce Surfline calls while testing.
- * Key: `${type}:${spotId}:${days}`
- */
 const cache = new Map();
 const CACHE_MS = 5 * 60 * 1000;
 
@@ -36,32 +31,38 @@ async function getBreakById(breakId) {
   return result.recordset[0] || null;
 }
 
-function daysForHours(hours) {
-  const h = Math.max(24, Math.min(168, Number(hours) || 72)); // clamp 1 to 7 days
-  return Math.ceil(h / 24);
+function getTimeRange(hours) {
+  const now = new Date();
+  const end = new Date(now.getTime() + hours * 60 * 60 * 1000);
+  return {
+    start: now.toISOString(),
+    end: end.toISOString()
+  };
 }
 
-async function surflineFetchJson(url) {
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'corelord/alpha',
-      'Accept': 'application/json',
-      // some Surfline endpoints behave better with these headers
-      'Origin': 'https://www.surfline.com',
-      'Referer': 'https://www.surfline.com/'
-    }
+async function fetchStormglassData(lat, lng, hours) {
+  const key = `stormglass:${lat}:${lng}:${hours}`;
+  const cached = getCache(key);
+  if (cached) return cached;
+
+  const { start, end } = getTimeRange(hours);
+  const url = `https://api.stormglass.io/v2/weather/point?lat=${lat}&lng=${lng}&params=waveHeight,windSpeed,windDirection,waterTemperature,swellHeight,swellDirection,swellPeriod&start=${start}&end=${end}`;
+
+  const response = await fetch(url, {
+    headers: { Authorization: process.env.STORMGLASS_API_KEY }
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Surfline ${res.status} ${url} ${text.slice(0, 200)}`);
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Stormglass ${response.status} ${text}`);
   }
-  return res.json();
+
+  const json = await response.json();
+  setCache(key, json);
+  return json;
 }
 
-/**
- * RAW proxy to inspect Surfline payloads for a spot.
- * GET /api/forecast/surfline/raw?breakId=123&type=wave|wind|tides&hours=72
- */
+// 🧪 Surfline raw endpoint still available
 router.get('/surfline/raw', async (req, res) => {
   try {
     const breakId = parseInt(req.query.breakId, 10);
@@ -79,7 +80,7 @@ router.get('/surfline/raw', async (req, res) => {
       return res.status(400).json({ message: 'SurflineSpotId not set for break' });
     }
 
-    const d = daysForHours(hours);
+    const d = Math.ceil(Math.max(24, Math.min(168, hours)) / 24);
     let url;
     if (typ === 'wave') {
       url = `https://services.surfline.com/kbyg/spots/forecasts/wave?spotId=${encodeURIComponent(brk.SurflineSpotId)}&days=${d}&intervalHours=1`;
@@ -93,7 +94,21 @@ router.get('/surfline/raw', async (req, res) => {
     const hit = getCache(key);
     if (hit) return res.json({ break: brk, fromCache: true, data: hit });
 
-    const data = await surflineFetchJson(url);
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'corelord/alpha',
+        'Accept': 'application/json',
+        'Origin': 'https://www.surfline.com',
+        'Referer': 'https://www.surfline.com/'
+      }
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Surfline ${response.status} ${text}`);
+    }
+
+    const data = await response.json();
     setCache(key, data);
     return res.json({ break: brk, fromCache: false, data });
   } catch (err) {
@@ -102,11 +117,7 @@ router.get('/surfline/raw', async (req, res) => {
   }
 });
 
-/**
- * Normalised time series across wave, wind, tides.
- * GET /api/forecast/timeseries?breakId=123&hours=72
- * Returns [{ ts, waveMinM, waveMaxM, periodS, swellDir, windKt, windDir, tideM }]
- */
+// ✅ Timeseries route using Stormglass
 router.get('/timeseries', async (req, res) => {
   try {
     const breakId = parseInt(req.query.breakId, 10);
@@ -115,72 +126,19 @@ router.get('/timeseries', async (req, res) => {
 
     const brk = await getBreakById(breakId);
     if (!brk) return res.status(404).json({ message: 'break not found' });
-    if (!brk.SurflineSpotId) {
-      return res.status(400).json({ message: 'SurflineSpotId not set for break' });
-    }
 
-    const d = daysForHours(hours);
-    const spotId = encodeURIComponent(brk.SurflineSpotId);
+    const data = await fetchStormglassData(brk.Latitude, brk.Longitude, hours);
 
-    const [wave, wind, tides] = await Promise.all([
-      surflineFetchJson(`https://services.surfline.com/kbyg/spots/forecasts/wave?spotId=${spotId}&days=${d}&intervalHours=1`),
-      surflineFetchJson(`https://services.surfline.com/kbyg/spots/forecasts/wind?spotId=${spotId}&days=${d}&intervalHours=1`),
-      surflineFetchJson(`https://services.surfline.com/kbyg/spots/forecasts/tides?spotId=${spotId}&days=${d}`)
-    ]);
-
-    const byTs = new Map();
-
-    // Wave series
-    const waveHours = wave?.data?.wave || wave?.data?.hours || wave?.data || [];
-    waveHours.forEach(h => {
-      const ts = (h?.timestamp ?? h?.ts ?? h?.time) || null;
-      if (!ts) return;
-      const rec = byTs.get(ts) || { ts };
-
-      const s = h.surf || {};
-      const minM = s?.min ?? s?.minHeight ?? h?.surfMin ?? null;
-      const maxM = s?.max ?? s?.maxHeight ?? h?.surfMax ?? null;
-      if (minM != null) rec.waveMinM = Number(minM);
-      if (maxM != null) rec.waveMaxM = Number(maxM);
-
-      if (Array.isArray(h.swells) && h.swells.length) {
-        const p = h.swells[0];
-        if (p?.period != null) rec.periodS = Number(p.period);
-        if (p?.direction != null) rec.swellDir = Math.round(Number(p.direction));
-      } else if (h?.period != null) {
-        rec.periodS = Number(h.period);
-      }
-
-      byTs.set(ts, rec);
-    });
-
-    // Wind series
-    const windHours = wind?.data?.wind || wind?.data?.hours || wind?.data || [];
-    windHours.forEach(h => {
-      const ts = (h?.timestamp ?? h?.ts ?? h?.time) || null;
-      if (!ts) return;
-      const rec = byTs.get(ts) || { ts };
-      const sp = h?.speed ?? h?.wind ?? h?.speedKts ?? null;
-      if (sp != null) rec.windKt = Number(sp);
-      const dir = h?.direction ?? h?.dir ?? h?.bearing ?? null;
-      if (dir != null) rec.windDir = Math.round(Number(dir));
-      byTs.set(ts, rec);
-    });
-
-    // Tide series
-    const tideHours = tides?.data?.tides || tides?.data?.hours || tides?.data || [];
-    tideHours.forEach(h => {
-      const ts = (h?.timestamp ?? h?.ts ?? h?.time) || null;
-      if (!ts) return;
-      const rec = byTs.get(ts) || { ts };
-      const height = h?.height ?? h?.tide ?? null;
-      if (height != null) rec.tideM = Number(height);
-      byTs.set(ts, rec);
-    });
-
-    const items = Array.from(byTs.values())
-      .sort((a, b) => a.ts - b.ts)
-      .slice(0, hours);
+    const items = (data.hours || []).map(entry => ({
+      ts: new Date(entry.time).getTime() / 1000,
+      waveHeightM: entry.waveHeight?.noaa ?? null,
+      windSpeedKt: entry.windSpeed?.noaa != null ? entry.windSpeed.noaa * 1.94384 : null,
+      windDir: entry.windDirection?.noaa ?? null,
+      swellHeightM: entry.swellHeight?.noaa ?? null,
+      swellDir: entry.swellDirection?.noaa ?? null,
+      swellPeriodS: entry.swellPeriod?.noaa ?? null,
+      waterTempC: entry.waterTemperature?.noaa ?? null
+    }));
 
     return res.json({ break: brk, hours: items.length, items });
   } catch (err) {
