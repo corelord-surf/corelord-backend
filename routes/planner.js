@@ -276,7 +276,6 @@ router.post('/availability', async (req, res) => {
   if (!email) return res.status(400).json({ message: 'Email claim missing in token' });
 
   const items = Array.isArray(req.body) ? req.body : [];
-  // quick validation
   for (const it of items) {
     if (typeof it.dow !== 'number' || it.dow < 0 || it.dow > 6) {
       return res.status(400).json({ message: 'Invalid dow value' });
@@ -288,27 +287,29 @@ router.post('/availability', async (req, res) => {
 
   try {
     const pool = await poolPromise;
-    const conn = await pool.connect();
 
-    // remove existing then insert new
-    await conn.request()
+    // wipe existing
+    await pool.request()
       .input('email', sql.NVarChar, email)
       .query(`DELETE FROM dbo.UserAvailability WHERE UserEmail = @email`);
 
     if (items.length > 0) {
-      const table = new sql.Table(); // TVP approach
-      table.columns.add('UserEmail', sql.NVarChar(256));
-      table.columns.add('Dow', sql.TinyInt);
-      table.columns.add('StartHour', sql.TinyInt);
-      items.forEach(it => table.rows.add(email, it.dow, it.startHour));
+      // build one INSERT with many VALUES, all parameterised
+      const req = pool.request();
+      req.input('email', sql.NVarChar, email);
 
-      // bulk insert
-      const request = conn.request();
-      request.input('tvp', table);
-      await request.query(`
+      const values = [];
+      items.forEach((it, i) => {
+        req.input(`d${i}`, sql.TinyInt, it.dow);
+        req.input(`h${i}`, sql.TinyInt, it.startHour);
+        values.push(`(@email, @d${i}, @h${i})`);
+      });
+
+      const sqlText = `
         INSERT INTO dbo.UserAvailability (UserEmail, Dow, StartHour)
-        SELECT UserEmail, Dow, StartHour FROM @tvp
-      `);
+        VALUES ${values.join(',')}
+      `;
+      await req.query(sqlText);
     }
 
     res.status(200).json({ message: 'Availability saved' });
