@@ -77,7 +77,7 @@ async function fetchStormglassData(lat, lng, hours) {
   return await response.json();
 }
 
-// ✅ Final route
+// ✅ Primary forecast endpoint
 router.get('/timeseries', async (req, res) => {
   try {
     const breakId = parseInt(req.query.breakId, 10);
@@ -112,6 +112,33 @@ router.get('/timeseries', async (req, res) => {
   } catch (err) {
     console.error('[GET /forecast/timeseries] Error:', err);
     return res.status(500).json({ message: String(err.message || err) });
+  }
+});
+
+// ✅ NEW: Pre-cache route
+router.get('/precache', async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request().query(`
+      SELECT Id, Latitude, Longitude
+      FROM dbo.SurfBreaks
+    `);
+    const breaks = result.recordset;
+    const hours = 168; // 7 days
+
+    for (const brk of breaks) {
+      try {
+        const data = await fetchStormglassData(brk.Latitude, brk.Longitude, hours);
+        await storeCachedForecast(brk.Id, hours, data);
+      } catch (err) {
+        console.error(`[precache] Failed for break ${brk.Id}:`, err.message);
+      }
+    }
+
+    res.status(200).json({ message: 'Precache complete', totalBreaks: breaks.length });
+  } catch (err) {
+    console.error('[GET /forecast/precache] Error:', err);
+    res.status(500).json({ error: 'Precache failed', details: err.message });
   }
 });
 
