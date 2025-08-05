@@ -71,7 +71,8 @@ router.get('/prefs', async (req, res) => {
       `);
 
     if (result.recordset.length === 0) {
-      return res.status(404).json({ message: 'No preferences saved for this break' });
+      // return 204 so the browser does not flag a network error
+      return res.status(204).end();
     }
 
     res.json(result.recordset[0]);
