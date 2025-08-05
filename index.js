@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import profileRouter from './routes/profile.js';
 import plannerRouter from './routes/planner.js';
+import forecastRouter from './routes/forecast.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -33,6 +34,7 @@ app.use(express.json());
 // routers
 app.use('/api/profile', profileRouter);
 app.use('/api/planner', plannerRouter);
+app.use('/api/forecast', forecastRouter);
 
 // health
 app.get('/', (_req, res) => {
