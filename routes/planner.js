@@ -66,10 +66,7 @@ router.get('/prefs', async (req, res) => {
         ORDER BY UpdatedAt DESC
       `);
 
-    if (result.recordset.length === 0) {
-      return res.status(204).end();
-    }
-
+    if (result.recordset.length === 0) return res.status(204).end();
     res.json(result.recordset[0]);
   } catch (err) {
     console.error('[GET /planner/prefs] Error:', err);
@@ -173,9 +170,7 @@ router.post('/prefs', async (req, res) => {
   }
 });
 
-// NEW  list all saved prefs for this user, optional region filter
-// GET /api/planner/prefs/list            returns all
-// GET /api/planner/prefs/list?region=Ericeira   filter by region
+// List saved prefs
 router.get('/prefs/list', async (req, res) => {
   const email = getEmailFromToken(req.user);
   const region = req.query.region || null;
@@ -214,8 +209,7 @@ router.get('/prefs/list', async (req, res) => {
   }
 });
 
-// NEW  delete prefs for a break for this user
-// DELETE /api/planner/prefs?breakId=123
+// Delete a pref row for a break
 router.delete('/prefs', async (req, res) => {
   const email = getEmailFromToken(req.user);
   const breakId = parseInt(req.query.breakId, 10);
@@ -236,6 +230,91 @@ router.delete('/prefs', async (req, res) => {
   } catch (err) {
     console.error('[DELETE /planner/prefs] Error:', err);
     res.status(500).json({ message: 'Failed to delete preferences' });
+  }
+});
+
+/**
+ * WEEKLY AVAILABILITY
+ * Table expected:
+ * CREATE TABLE dbo.UserAvailability (
+ *   UserEmail NVARCHAR(256) NOT NULL,
+ *   Dow TINYINT NOT NULL,           -- 0=Sun ... 6=Sat
+ *   StartHour TINYINT NOT NULL,     -- 0..23 local hour
+ *   UpdatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+ *   CONSTRAINT PK_UserAvailability PRIMARY KEY (UserEmail, Dow, StartHour)
+ * );
+ */
+
+// GET /api/planner/availability
+router.get('/availability', async (req, res) => {
+  const email = getEmailFromToken(req.user);
+  if (!email) return res.status(400).json({ message: 'Email claim missing in token' });
+
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input('email', sql.NVarChar, email)
+      .query(`
+        SELECT Dow, StartHour
+        FROM dbo.UserAvailability
+        WHERE UserEmail = @email
+        ORDER BY Dow, StartHour
+      `);
+
+    if (result.recordset.length === 0) return res.status(204).end();
+    res.json(result.recordset); // [{Dow, StartHour}, ...]
+  } catch (err) {
+    console.error('[GET /planner/availability] Error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// POST /api/planner/availability
+// Body: [{ dow: 0..6, startHour: 0..23 }, ...] each block represents a two hour slot starting at startHour
+router.post('/availability', async (req, res) => {
+  const email = getEmailFromToken(req.user);
+  if (!email) return res.status(400).json({ message: 'Email claim missing in token' });
+
+  const items = Array.isArray(req.body) ? req.body : [];
+  // quick validation
+  for (const it of items) {
+    if (typeof it.dow !== 'number' || it.dow < 0 || it.dow > 6) {
+      return res.status(400).json({ message: 'Invalid dow value' });
+    }
+    if (typeof it.startHour !== 'number' || it.startHour < 0 || it.startHour > 23) {
+      return res.status(400).json({ message: 'Invalid startHour value' });
+    }
+  }
+
+  try {
+    const pool = await poolPromise;
+    const conn = await pool.connect();
+
+    // remove existing then insert new
+    await conn.request()
+      .input('email', sql.NVarChar, email)
+      .query(`DELETE FROM dbo.UserAvailability WHERE UserEmail = @email`);
+
+    if (items.length > 0) {
+      const table = new sql.Table(); // TVP approach
+      table.columns.add('UserEmail', sql.NVarChar(256));
+      table.columns.add('Dow', sql.TinyInt);
+      table.columns.add('StartHour', sql.TinyInt);
+      items.forEach(it => table.rows.add(email, it.dow, it.startHour));
+
+      // bulk insert
+      const request = conn.request();
+      request.input('tvp', table);
+      await request.query(`
+        INSERT INTO dbo.UserAvailability (UserEmail, Dow, StartHour)
+        SELECT UserEmail, Dow, StartHour FROM @tvp
+      `);
+    }
+
+    res.status(200).json({ message: 'Availability saved' });
+  } catch (err) {
+    console.error('[POST /planner/availability] Error:', err);
+    res.status(500).json({ message: 'Failed to save availability' });
   }
 });
 
