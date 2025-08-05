@@ -2,12 +2,11 @@
 import express from 'express';
 import cors from 'cors';
 import profileRouter from './routes/profile.js';
-import plannerRouter from './routes/planner.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// build id header
+// add a build header to every response so we can see which instance answered
 app.use((req, res, next) => {
   const buildId =
     process.env.WEBSITE_BUILD_ID ||
@@ -17,7 +16,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// CORS for SWA frontend
+// Allow your Static Web App to call the API
 app.use(
   cors({
     origin: [
@@ -29,11 +28,10 @@ app.use(
 
 app.use(express.json());
 
-// routers
+// IMPORTANT: no mock user middleware here — rely on verifyToken inside routes
 app.use('/api/profile', profileRouter);
-app.use('/api/planner', plannerRouter);
 
-// health
+// Simple health endpoint
 app.get('/', (_req, res) => {
   res.send('corelord backend is running.');
 });
