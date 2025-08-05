@@ -1,12 +1,13 @@
 // routes/forecast.js
 import express from 'express';
 import { sql, poolPromise } from '../db.js';
+import fetch from 'node-fetch';
 
 const router = express.Router();
 
 /**
  * Small in memory cache to reduce Surfline calls while testing.
- * Key: `${type}:${spotId}:${hours}`
+ * Key: `${type}:${spotId}:${days}`
  */
 const cache = new Map();
 const CACHE_MS = 5 * 60 * 1000;
@@ -35,9 +36,8 @@ async function getBreakById(breakId) {
   return result.recordset[0] || null;
 }
 
-// Basic Surfline helpers
 function daysForHours(hours) {
-  const h = Math.max(24, Math.min(168, Number(hours) || 72)); // 1 to 7 days
+  const h = Math.max(24, Math.min(168, Number(hours) || 72)); // clamp 1 to 7 days
   return Math.ceil(h / 24);
 }
 
@@ -45,7 +45,10 @@ async function surflineFetchJson(url) {
   const res = await fetch(url, {
     headers: {
       'User-Agent': 'corelord/alpha',
-      'Accept': 'application/json'
+      'Accept': 'application/json',
+      // some Surfline endpoints behave better with these headers
+      'Origin': 'https://www.surfline.com',
+      'Referer': 'https://www.surfline.com/'
     }
   });
   if (!res.ok) {
@@ -83,7 +86,6 @@ router.get('/surfline/raw', async (req, res) => {
     } else if (typ === 'wind') {
       url = `https://services.surfline.com/kbyg/spots/forecasts/wind?spotId=${encodeURIComponent(brk.SurflineSpotId)}&days=${d}&intervalHours=1`;
     } else {
-      // tides endpoint does not accept intervalHours and returns events plus hourly in some regions
       url = `https://services.surfline.com/kbyg/spots/forecasts/tides?spotId=${encodeURIComponent(brk.SurflineSpotId)}&days=${d}`;
     }
 
@@ -96,12 +98,12 @@ router.get('/surfline/raw', async (req, res) => {
     return res.json({ break: brk, fromCache: false, data });
   } catch (err) {
     console.error('[GET /forecast/surfline/raw] Error:', err);
-    return res.status(500).json({ message: 'Failed to fetch Surfline data' });
+    return res.status(500).json({ message: String(err.message || err) });
   }
 });
 
 /**
- * Normalised timeseries across wave, wind, tides.
+ * Normalised time series across wave, wind, tides.
  * GET /api/forecast/timeseries?breakId=123&hours=72
  * Returns [{ ts, waveMinM, waveMaxM, periodS, swellDir, windKt, windDir, tideM }]
  */
@@ -120,68 +122,62 @@ router.get('/timeseries', async (req, res) => {
     const d = daysForHours(hours);
     const spotId = encodeURIComponent(brk.SurflineSpotId);
 
-    // fetch in parallel
     const [wave, wind, tides] = await Promise.all([
       surflineFetchJson(`https://services.surfline.com/kbyg/spots/forecasts/wave?spotId=${spotId}&days=${d}&intervalHours=1`),
       surflineFetchJson(`https://services.surfline.com/kbyg/spots/forecasts/wind?spotId=${spotId}&days=${d}&intervalHours=1`),
       surflineFetchJson(`https://services.surfline.com/kbyg/spots/forecasts/tides?spotId=${spotId}&days=${d}`)
     ]);
 
-    // Build a map of ts -> record
     const byTs = new Map();
 
-    // Wave payload usually has .data.wave or .data.hours
-    const waveHours =
-      wave?.data?.wave || wave?.data?.hours || wave?.data || [];
+    // Wave series
+    const waveHours = wave?.data?.wave || wave?.data?.hours || wave?.data || [];
     waveHours.forEach(h => {
       const ts = (h?.timestamp ?? h?.ts ?? h?.time) || null;
       if (!ts) return;
       const rec = byTs.get(ts) || { ts };
-      // surf min max metres sometimes present at h.surf.min/max or h.surf.minHeight etc
-      const s = h.surf || {};
-      const minM = s?.min || s?.minHeight || h?.surfMin || null;
-      const maxM = s?.max || s?.maxHeight || h?.surfMax || null;
-      rec.waveMinM = minM != null ? Number(minM) : rec.waveMinM ?? null;
-      rec.waveMaxM = maxM != null ? Number(maxM) : rec.waveMaxM ?? null;
 
-      // primary swell period and direction if available
+      const s = h.surf || {};
+      const minM = s?.min ?? s?.minHeight ?? h?.surfMin ?? null;
+      const maxM = s?.max ?? s?.maxHeight ?? h?.surfMax ?? null;
+      if (minM != null) rec.waveMinM = Number(minM);
+      if (maxM != null) rec.waveMaxM = Number(maxM);
+
       if (Array.isArray(h.swells) && h.swells.length) {
         const p = h.swells[0];
-        rec.periodS = p?.period != null ? Number(p.period) : rec.periodS ?? null;
-        rec.swellDir = p?.direction != null ? Math.round(Number(p.direction)) : rec.swellDir ?? null;
-      } else if (h?.period) {
+        if (p?.period != null) rec.periodS = Number(p.period);
+        if (p?.direction != null) rec.swellDir = Math.round(Number(p.direction));
+      } else if (h?.period != null) {
         rec.periodS = Number(h.period);
       }
+
       byTs.set(ts, rec);
     });
 
-    // Wind
-    const windHours =
-      wind?.data?.wind || wind?.data?.hours || wind?.data || [];
+    // Wind series
+    const windHours = wind?.data?.wind || wind?.data?.hours || wind?.data || [];
     windHours.forEach(h => {
       const ts = (h?.timestamp ?? h?.ts ?? h?.time) || null;
       if (!ts) return;
       const rec = byTs.get(ts) || { ts };
       const sp = h?.speed ?? h?.wind ?? h?.speedKts ?? null;
-      rec.windKt = sp != null ? Number(sp) : rec.windKt ?? null;
+      if (sp != null) rec.windKt = Number(sp);
       const dir = h?.direction ?? h?.dir ?? h?.bearing ?? null;
-      rec.windDir = dir != null ? Math.round(Number(dir)) : rec.windDir ?? null;
+      if (dir != null) rec.windDir = Math.round(Number(dir));
       byTs.set(ts, rec);
     });
 
-    // Tides events sometimes need interpolation; for now attach nearest event height if provided
-    const tideHours =
-      tides?.data?.tides || tides?.data?.hours || tides?.data || [];
+    // Tide series
+    const tideHours = tides?.data?.tides || tides?.data?.hours || tides?.data || [];
     tideHours.forEach(h => {
       const ts = (h?.timestamp ?? h?.ts ?? h?.time) || null;
       if (!ts) return;
       const rec = byTs.get(ts) || { ts };
       const height = h?.height ?? h?.tide ?? null;
-      rec.tideM = height != null ? Number(height) : rec.tideM ?? null;
+      if (height != null) rec.tideM = Number(height);
       byTs.set(ts, rec);
     });
 
-    // Return sorted array, limit to requested hours
     const items = Array.from(byTs.values())
       .sort((a, b) => a.ts - b.ts)
       .slice(0, hours);
@@ -189,7 +185,7 @@ router.get('/timeseries', async (req, res) => {
     return res.json({ break: brk, hours: items.length, items });
   } catch (err) {
     console.error('[GET /forecast/timeseries] Error:', err);
-    return res.status(500).json({ message: 'Failed to build timeseries' });
+    return res.status(500).json({ message: String(err.message || err) });
   }
 });
 
