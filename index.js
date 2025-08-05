@@ -23,7 +23,8 @@ app.use(
     origin: [
       'https://calm-coast-025fe8203.2.azurestaticapps.net',
     ],
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
 
