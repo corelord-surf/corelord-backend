@@ -11,8 +11,7 @@ const STORMGLASS_PARAMS = [
   'waterTemperature',
   'swellHeight',
   'swellDirection',
-  'swellPeriod',
-  'tide'
+  'swellPeriod'
 ];
 
 function getTimeRange(hours) {
@@ -105,7 +104,7 @@ router.get('/timeseries', async (req, res) => {
       swellDir: entry.swellDirection?.noaa ?? null,
       swellPeriodS: entry.swellPeriod?.noaa ?? null,
       waterTempC: entry.waterTemperature?.noaa ?? null,
-      tideM: entry.tide?.sg ?? null
+      tideM: null // Placeholder: tide is not available from this endpoint
     }));
 
     return res.json({ break: brk, hours: items.length, fromCache, items });
