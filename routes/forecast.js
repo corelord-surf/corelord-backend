@@ -1,33 +1,18 @@
 // routes/forecast.js
 import express from 'express';
 import { sql, poolPromise } from '../db.js';
-import fetch from 'node-fetch';
 
 const router = express.Router();
-const STORMGLASS_PARAMS = [
-  'waveHeight',
-  'windSpeed',
-  'windDirection',
-  'waterTemperature',
-  'swellHeight',
-  'swellDirection',
-  'swellPeriod'
-];
-
-function getTimeRange(hours) {
-  const now = new Date();
-  const end = new Date(now.getTime() + hours * 60 * 60 * 1000);
-  return {
-    start: now.toISOString(),
-    end: end.toISOString()
-  };
-}
 
 async function getBreakById(breakId) {
   const pool = await poolPromise;
   const result = await pool.request()
     .input('id', sql.Int, breakId)
-    .query(`SELECT TOP 1 Id, Name, Region, Latitude, Longitude FROM dbo.SurfBreaks WHERE Id = @id`);
+    .query(`
+      SELECT TOP 1 Id, Name, Region, Latitude, Longitude
+      FROM dbo.SurfBreaks
+      WHERE Id = @id
+    `);
   return result.recordset[0] || null;
 }
 
@@ -54,43 +39,6 @@ async function getCachedForecast(breakId, hours) {
   }
 }
 
-async function storeCachedForecast(breakId, hours, json) {
-  const pool = await poolPromise;
-  await pool.request()
-    .input('BreakId', sql.Int, breakId)
-    .input('Hours', sql.Int, hours)
-    .input('DataJson', sql.NVarChar(sql.MAX), JSON.stringify(json))
-    .query(`
-      INSERT INTO dbo.ForecastCache (BreakId, Hours, DataJson)
-      VALUES (@BreakId, @Hours, @DataJson)
-    `);
-}
-
-async function fetchStormglassData(lat, lng, hours) {
-  const { start, end } = getTimeRange(hours);
-  const url = `https://api.stormglass.io/v2/weather/point?lat=${lat}&lng=${lng}&params=${STORMGLASS_PARAMS.join(',')}&start=${start}&end=${end}`;
-
-  const response = await fetch(url, {
-    headers: { Authorization: process.env.STORMGLASS_API_KEY }
-  });
-
-  const text = await response.text();
-
-  if (!response.ok) {
-    throw new Error(`Stormglass ${response.status}: ${text}`);
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (err) {
-    throw new Error(`Invalid JSON from Stormglass: ${err.message}`);
-  }
-
-  console.log('[Stormglass Response]', text.slice(0, 500));
-  return parsed;
-}
-
 router.get('/timeseries', async (req, res) => {
   try {
     const breakId = parseInt(req.query.breakId, 10);
@@ -100,18 +48,9 @@ router.get('/timeseries', async (req, res) => {
     const brk = await getBreakById(breakId);
     if (!brk) return res.status(404).json({ message: 'break not found' });
 
-    let json = await getCachedForecast(breakId, hours);
-    let fromCache = true;
-
+    const json = await getCachedForecast(breakId, hours);
     if (!json) {
-      try {
-        json = await fetchStormglassData(brk.Latitude, brk.Longitude, hours);
-        await storeCachedForecast(breakId, hours, json);
-        fromCache = false;
-      } catch (err) {
-        console.error('[fetchStormglassData] Error:', err.message);
-        return res.status(502).json({ message: 'Failed to fetch forecast data', detail: err.message });
-      }
+      return res.status(503).json({ message: 'Forecast data is not yet available. Please check back later.' });
     }
 
     if (!json.hours || !Array.isArray(json.hours)) {
@@ -130,43 +69,10 @@ router.get('/timeseries', async (req, res) => {
       tideM: null
     }));
 
-    return res.json({ break: brk, hours: items.length, fromCache, items });
+    return res.json({ break: brk, hours: items.length, fromCache: true, items });
   } catch (err) {
     console.error('[GET /forecast/timeseries] Error:', err);
     return res.status(500).json({ message: String(err.message || err) });
-  }
-});
-
-router.get('/precache', async (req, res) => {
-  try {
-    const pool = await poolPromise;
-    const result = await pool.request().query(`
-      SELECT Id, Latitude, Longitude
-      FROM dbo.SurfBreaks
-    `);
-    const breaks = result.recordset;
-    const hours = 168;
-    const failures = [];
-
-    for (const brk of breaks) {
-      try {
-        const data = await fetchStormglassData(brk.Latitude, brk.Longitude, hours);
-        await storeCachedForecast(brk.Id, hours, data);
-      } catch (err) {
-        console.error(`[precache] Failed for break ${brk.Id}:`, err.message);
-        failures.push({ breakId: brk.Id, error: err.message });
-      }
-    }
-
-    res.status(200).json({
-      message: 'Precache complete',
-      totalBreaks: breaks.length,
-      failed: failures.length,
-      failures
-    });
-  } catch (err) {
-    console.error('[GET /forecast/precache] Error:', err);
-    res.status(500).json({ error: 'Precache failed', details: err.message });
   }
 });
 
