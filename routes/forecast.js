@@ -37,7 +37,7 @@ async function getCachedForecast(breakId, hours) {
     .input('BreakId', sql.Int, breakId)
     .input('Hours', sql.Int, hours)
     .query(`
-      SELECT TOP 1 DataJson, FetchedAt
+      SELECT TOP 1 Json, FetchedAt
       FROM dbo.ForecastCache
       WHERE BreakId = @BreakId AND Hours = @Hours
         AND FetchedAt > DATEADD(DAY, -7, SYSUTCDATETIME())
@@ -45,7 +45,7 @@ async function getCachedForecast(breakId, hours) {
     `);
   const record = result.recordset[0];
   if (!record) return null;
-  return JSON.parse(record.DataJson);
+  return JSON.parse(record.Json);
 }
 
 async function storeCachedForecast(breakId, hours, json) {
@@ -53,10 +53,10 @@ async function storeCachedForecast(breakId, hours, json) {
   await pool.request()
     .input('BreakId', sql.Int, breakId)
     .input('Hours', sql.Int, hours)
-    .input('DataJson', sql.NVarChar(sql.MAX), JSON.stringify(json))
+    .input('Json', sql.NVarChar(sql.MAX), JSON.stringify(json))
     .query(`
-      INSERT INTO dbo.ForecastCache (BreakId, Hours, DataJson)
-      VALUES (@BreakId, @Hours, @DataJson)
+      INSERT INTO dbo.ForecastCache (BreakId, Hours, Json)
+      VALUES (@BreakId, @Hours, @Json)
     `);
 }
 
@@ -76,7 +76,6 @@ async function fetchStormglassData(lat, lng, hours) {
   return await response.json();
 }
 
-// ✅ Primary forecast endpoint
 router.get('/timeseries', async (req, res) => {
   try {
     const breakId = parseInt(req.query.breakId, 10);
@@ -104,7 +103,7 @@ router.get('/timeseries', async (req, res) => {
       swellDir: entry.swellDirection?.noaa ?? null,
       swellPeriodS: entry.swellPeriod?.noaa ?? null,
       waterTempC: entry.waterTemperature?.noaa ?? null,
-      tideM: null // Placeholder: tide is not available from this endpoint
+      tideM: null
     }));
 
     return res.json({ break: brk, hours: items.length, fromCache, items });
@@ -114,7 +113,6 @@ router.get('/timeseries', async (req, res) => {
   }
 });
 
-// ✅ Enhanced: Pre-cache route with error tracking
 router.get('/precache', async (req, res) => {
   try {
     const pool = await poolPromise;
@@ -123,7 +121,7 @@ router.get('/precache', async (req, res) => {
       FROM dbo.SurfBreaks
     `);
     const breaks = result.recordset;
-    const hours = 168; // 7 days
+    const hours = 168;
     const failures = [];
 
     for (const brk of breaks) {
