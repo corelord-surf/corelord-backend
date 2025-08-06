@@ -45,7 +45,13 @@ async function getCachedForecast(breakId, hours) {
     `);
   const record = result.recordset[0];
   if (!record) return null;
-  return JSON.parse(record.Json);
+
+  try {
+    return JSON.parse(record.Json);
+  } catch (err) {
+    console.error(`[getCachedForecast] Failed to parse cached JSON for BreakId ${breakId}:`, err.message);
+    return null;
+  }
 }
 
 async function storeCachedForecast(breakId, hours, json) {
@@ -68,12 +74,21 @@ async function fetchStormglassData(lat, lng, hours) {
     headers: { Authorization: process.env.STORMGLASS_API_KEY }
   });
 
+  const text = await response.text();
+
   if (!response.ok) {
-    const text = await response.text();
     throw new Error(`Stormglass ${response.status}: ${text}`);
   }
 
-  return await response.json();
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`Invalid JSON from Stormglass: ${err.message}`);
+  }
+
+  console.log('[Stormglass Response]', text.slice(0, 500));
+  return parsed;
 }
 
 router.get('/timeseries', async (req, res) => {
@@ -89,12 +104,21 @@ router.get('/timeseries', async (req, res) => {
     let fromCache = true;
 
     if (!json) {
-      json = await fetchStormglassData(brk.Latitude, brk.Longitude, hours);
-      await storeCachedForecast(breakId, hours, json);
-      fromCache = false;
+      try {
+        json = await fetchStormglassData(brk.Latitude, brk.Longitude, hours);
+        await storeCachedForecast(breakId, hours, json);
+        fromCache = false;
+      } catch (err) {
+        console.error('[fetchStormglassData] Error:', err.message);
+        return res.status(502).json({ message: 'Failed to fetch forecast data', detail: err.message });
+      }
     }
 
-    const items = (json.hours || []).map(entry => ({
+    if (!json.hours || !Array.isArray(json.hours)) {
+      return res.status(500).json({ message: 'Invalid forecast data: missing hours array' });
+    }
+
+    const items = json.hours.map(entry => ({
       ts: new Date(entry.time).getTime() / 1000,
       waveHeightM: entry.waveHeight?.noaa ?? null,
       windSpeedKt: entry.windSpeed?.noaa != null ? entry.windSpeed.noaa * 1.94384 : null,
