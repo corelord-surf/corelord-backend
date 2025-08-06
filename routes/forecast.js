@@ -37,7 +37,7 @@ async function getCachedForecast(breakId, hours) {
     .input('BreakId', sql.Int, breakId)
     .input('Hours', sql.Int, hours)
     .query(`
-      SELECT TOP 1 Json, FetchedAt
+      SELECT TOP 1 DataJson, FetchedAt
       FROM dbo.ForecastCache
       WHERE BreakId = @BreakId AND Hours = @Hours
         AND FetchedAt > DATEADD(DAY, -7, SYSUTCDATETIME())
@@ -47,7 +47,7 @@ async function getCachedForecast(breakId, hours) {
   if (!record) return null;
 
   try {
-    return JSON.parse(record.Json);
+    return JSON.parse(record.DataJson);
   } catch (err) {
     console.error(`[getCachedForecast] Failed to parse cached JSON for BreakId ${breakId}:`, err.message);
     return null;
@@ -59,10 +59,10 @@ async function storeCachedForecast(breakId, hours, json) {
   await pool.request()
     .input('BreakId', sql.Int, breakId)
     .input('Hours', sql.Int, hours)
-    .input('Json', sql.NVarChar(sql.MAX), JSON.stringify(json))
+    .input('DataJson', sql.NVarChar(sql.MAX), JSON.stringify(json))
     .query(`
-      INSERT INTO dbo.ForecastCache (BreakId, Hours, Json)
-      VALUES (@BreakId, @Hours, @Json)
+      INSERT INTO dbo.ForecastCache (BreakId, Hours, DataJson)
+      VALUES (@BreakId, @Hours, @DataJson)
     `);
 }
 
