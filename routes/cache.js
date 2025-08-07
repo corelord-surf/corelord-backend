@@ -51,10 +51,13 @@ async function getAllBreaks() {
 
 async function storeCachedForecast(breakId, hours, json) {
   const pool = await poolPromise;
+  const jsonString = JSON.stringify(json);
+  console.log(`[SQL] Storing forecast: BreakId=${breakId}, Size=${jsonString.length}, Hours=${hours}`);
+
   await pool.request()
     .input('BreakId', sql.Int, breakId)
     .input('Hours', sql.Int, hours)
-    .input('DataJson', sql.NVarChar(sql.MAX), JSON.stringify(json))
+    .input('DataJson', sql.NVarChar(sql.MAX), jsonString)
     .query(`
       INSERT INTO dbo.ForecastCache (BreakId, Hours, DataJson)
       VALUES (@BreakId, @Hours, @DataJson)
@@ -66,7 +69,7 @@ async function fetchStormglassData(lat, lng, hours) {
   const url = `https://api.stormglass.io/v2/weather/point?lat=${lat}&lng=${lng}&params=${STORMGLASS_PARAMS.join(',')}&start=${start}&end=${end}`;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout per fetch
+  const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
 
   try {
     const response = await fetch(url, {
@@ -77,6 +80,7 @@ async function fetchStormglassData(lat, lng, hours) {
     const text = await response.text();
 
     if (!response.ok) {
+      console.error(`[Stormglass] Error ${response.status}: ${text}`);
       throw new Error(`Stormglass ${response.status}: ${text}`);
     }
 
@@ -84,16 +88,17 @@ async function fetchStormglassData(lat, lng, hours) {
     try {
       parsed = JSON.parse(text);
     } catch (err) {
-      throw new Error(`Invalid JSON from Stormglass: ${err.message}`);
+      throw new Error(`Invalid JSON: ${err.message}`);
     }
 
+    console.log(`[Stormglass] Received ${parsed.hours?.length || 0} records`);
     return parsed;
   } finally {
     clearTimeout(timeout);
   }
 }
 
-// Single break (used for testing and individual caching)
+// Single break route (used by /daily-batch and manual test)
 router.get('/daily', async (req, res) => {
   try {
     const breakId = parseInt(req.query.breakId, 10);
@@ -103,28 +108,33 @@ router.get('/daily', async (req, res) => {
     const brk = await getBreakById(breakId);
     if (!brk) return res.status(404).json({ message: 'break not found' });
 
+    console.log(`[Daily] Fetching forecast for ${brk.Name} (${brk.Id})`);
+
     const json = await fetchStormglassData(brk.Latitude, brk.Longitude, hours);
     await storeCachedForecast(breakId, hours, json);
 
     const items = json.hours || [];
-    return res.status(200).json({ message: 'cached', break: brk.Name, hours: items.length, items });
+    console.log(`[Daily] Stored ${items.length} hours for ${brk.Name}`);
+    return res.status(200).json({ message: 'cached', break: brk.Name, hours: items.length });
   } catch (err) {
     console.error('[GET /api/cache/daily] Error:', err.message);
     return res.status(500).json({ message: 'Cache failed', detail: err.message });
   }
 });
 
-// Batch caching for Logic App — runs all breaks
+// All breaks – for Logic App
 router.get('/daily-batch', async (_req, res) => {
   try {
     const breaks = await getAllBreaks();
     const results = [];
 
     for (const brk of breaks) {
+      console.log(`[Batch] Processing ${brk.Name} (${brk.Id})`);
       const url = `${API_BASE}/api/cache/daily?breakId=${brk.Id}`;
       try {
         const response = await fetch(url, { timeout: 10000 });
         const json = await response.json();
+
         results.push({
           break: brk.Name,
           region: brk.Region,
@@ -133,7 +143,7 @@ router.get('/daily-batch', async (_req, res) => {
           error: json.detail || null
         });
       } catch (err) {
-        console.error(`[daily-batch] ${brk.Name} failed:`, err.message);
+        console.error(`[Batch] ${brk.Name} failed: ${err.message}`);
         results.push({
           break: brk.Name,
           region: brk.Region,
@@ -144,6 +154,7 @@ router.get('/daily-batch', async (_req, res) => {
       }
     }
 
+    console.log(`[Batch] Complete: ${results.length} breaks processed`);
     return res.json({ status: 'ok', count: results.length, results });
   } catch (err) {
     console.error('[GET /api/cache/daily-batch] Error:', err.message);
