@@ -69,7 +69,7 @@ async function fetchStormglassData(lat, lng, hours) {
   const url = `https://api.stormglass.io/v2/weather/point?lat=${lat}&lng=${lng}&params=${STORMGLASS_PARAMS.join(',')}&start=${start}&end=${end}`;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
 
   try {
     const response = await fetch(url, {
@@ -80,25 +80,23 @@ async function fetchStormglassData(lat, lng, hours) {
     const text = await response.text();
 
     if (!response.ok) {
-      console.error(`[Stormglass] Error ${response.status}: ${text}`);
+      console.error(`[Stormglass] ${response.status}: ${text.slice(0, 100)}...`);
       throw new Error(`Stormglass ${response.status}: ${text}`);
     }
 
-    let parsed;
     try {
-      parsed = JSON.parse(text);
+      const parsed = JSON.parse(text);
+      console.log(`[Stormglass] ${parsed.hours?.length || 0} records received`);
+      return parsed;
     } catch (err) {
-      throw new Error(`Invalid JSON: ${err.message}`);
+      throw new Error(`Invalid JSON from Stormglass: ${err.message}`);
     }
-
-    console.log(`[Stormglass] Received ${parsed.hours?.length || 0} records`);
-    return parsed;
   } finally {
     clearTimeout(timeout);
   }
 }
 
-// Single break (used by Logic App or manual test)
+// Single break (used by /daily-batch or direct)
 router.get('/daily', async (req, res) => {
   try {
     const breakId = parseInt(req.query.breakId, 10);
@@ -108,7 +106,7 @@ router.get('/daily', async (req, res) => {
     const brk = await getBreakById(breakId);
     if (!brk) return res.status(404).json({ message: 'break not found' });
 
-    console.log(`[Daily] Fetching forecast for ${brk.Name} (${brk.Id})`);
+    console.log(`[Daily] Fetching ${brk.Name} (${brk.Id})`);
 
     const json = await fetchStormglassData(brk.Latitude, brk.Longitude, hours);
     await storeCachedForecast(breakId, hours, json);
@@ -122,7 +120,7 @@ router.get('/daily', async (req, res) => {
   }
 });
 
-// Batch for Logic App
+// Batch caching — for Logic App
 router.get('/daily-batch', async (_req, res) => {
   try {
     const breaks = await getAllBreaks();
@@ -131,22 +129,19 @@ router.get('/daily-batch', async (_req, res) => {
     for (const brk of breaks) {
       console.log(`[Batch] Processing ${brk.Name} (${brk.Id})`);
       const url = `${API_BASE}/api/cache/daily?breakId=${brk.Id}`;
-
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000);
+      const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
       try {
         const response = await fetch(url, { signal: controller.signal });
+        const text = await response.text();
         clearTimeout(timeout);
 
-        const text = await response.text();
-        let json;
-
+        let json = {};
         try {
           json = JSON.parse(text);
-        } catch (parseErr) {
-          console.error(`[Batch] Invalid JSON from ${brk.Name}: ${parseErr.message}`);
-          json = { message: 'Invalid JSON', detail: text.slice(0, 200) };
+        } catch (err) {
+          throw new Error(`Invalid JSON: ${text.slice(0, 80)}...`);
         }
 
         results.push({
@@ -169,7 +164,7 @@ router.get('/daily-batch', async (_req, res) => {
       }
     }
 
-    console.log(`[Batch] Complete: ${results.length} breaks processed`);
+    console.log(`[Batch] Completed: ${results.length} breaks`);
     return res.json({ status: 'ok', count: results.length, results });
   } catch (err) {
     console.error('[GET /api/cache/daily-batch] Error:', err.message);
