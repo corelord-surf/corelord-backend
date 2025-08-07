@@ -122,7 +122,7 @@ router.get('/daily', async (req, res) => {
   }
 });
 
-// All breaks – for Logic App
+// All breaks – for Logic App (with timeout handling)
 router.get('/daily-batch', async (_req, res) => {
   try {
     const breaks = await getAllBreaks();
@@ -131,9 +131,14 @@ router.get('/daily-batch', async (_req, res) => {
     for (const brk of breaks) {
       console.log(`[Batch] Processing ${brk.Name} (${brk.Id})`);
       const url = `${API_BASE}/api/cache/daily?breakId=${brk.Id}`;
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
       try {
-        const response = await fetch(url, { timeout: 10000 });
+        const response = await fetch(url, { signal: controller.signal });
         const json = await response.json();
+        clearTimeout(timeout);
 
         results.push({
           break: brk.Name,
@@ -143,6 +148,7 @@ router.get('/daily-batch', async (_req, res) => {
           error: json.detail || null
         });
       } catch (err) {
+        clearTimeout(timeout);
         console.error(`[Batch] ${brk.Name} failed: ${err.message}`);
         results.push({
           break: brk.Name,
