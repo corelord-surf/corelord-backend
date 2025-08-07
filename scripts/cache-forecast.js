@@ -15,7 +15,7 @@ async function getAllBreaks() {
 }
 
 async function cacheForecastForBreak(breakId, breakName, region) {
-  const url = `${API_BASE}/forecast/cache-and-store?breakId=${breakId}&hours=${HOURS}`;
+  const url = `${API_BASE}/api/cache/daily?breakId=${breakId}&hours=${HOURS}`;
   console.log(`→ Caching ${HOURS}h for ${breakName} (${region})...`);
 
   try {
@@ -25,8 +25,9 @@ async function cacheForecastForBreak(breakId, breakName, region) {
       console.error(`✖ Failed for ${breakName} (${res.status}): ${msg}`);
       return;
     }
+
     const json = await res.json();
-    console.log(`✔ Cached ${json.items?.length || 0} hours for ${breakName}`);
+    console.log(`✔ Cached ${json.items || 0} entries for ${breakName}`);
   } catch (err) {
     console.error(`✖ Error for ${breakName}: ${err.message}`);
   }
