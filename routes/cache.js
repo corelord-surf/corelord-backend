@@ -69,7 +69,7 @@ async function fetchStormglassData(lat, lng, hours) {
   const url = `https://api.stormglass.io/v2/weather/point?lat=${lat}&lng=${lng}&params=${STORMGLASS_PARAMS.join(',')}&start=${start}&end=${end}`;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
+  const timeout = setTimeout(() => controller.abort(), 8000);
 
   try {
     const response = await fetch(url, {
@@ -98,7 +98,7 @@ async function fetchStormglassData(lat, lng, hours) {
   }
 }
 
-// Single break route (used by /daily-batch and manual test)
+// Single break (used by Logic App or manual test)
 router.get('/daily', async (req, res) => {
   try {
     const breakId = parseInt(req.query.breakId, 10);
@@ -122,7 +122,7 @@ router.get('/daily', async (req, res) => {
   }
 });
 
-// All breaks – for Logic App (with timeout handling)
+// Batch for Logic App
 router.get('/daily-batch', async (_req, res) => {
   try {
     const breaks = await getAllBreaks();
@@ -133,12 +133,21 @@ router.get('/daily-batch', async (_req, res) => {
       const url = `${API_BASE}/api/cache/daily?breakId=${brk.Id}`;
 
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
+      const timeout = setTimeout(() => controller.abort(), 10000);
 
       try {
         const response = await fetch(url, { signal: controller.signal });
-        const json = await response.json();
         clearTimeout(timeout);
+
+        const text = await response.text();
+        let json;
+
+        try {
+          json = JSON.parse(text);
+        } catch (parseErr) {
+          console.error(`[Batch] Invalid JSON from ${brk.Name}: ${parseErr.message}`);
+          json = { message: 'Invalid JSON', detail: text.slice(0, 200) };
+        }
 
         results.push({
           break: brk.Name,
