@@ -19,10 +19,10 @@ const API_BASE =
   "https://corelord-backend-etgpd9dfdufragfb.westeurope-01.azurewebsites.net";
 const HOURS = 168;
 
-// budget per run. set to 10 for the free tier. you can lift this when you upgrade
+// daily call budget
 const MAX_CALLS_PER_RUN = 10;
 
-// rotation seed date. changing this simply shifts the daily grouping
+// rotation seed. changing this shifts the daily grouping
 const ROTATION_EPOCH_UTC = Date.UTC(2025, 0, 1); // 1 Jan 2025
 
 function getTimeRange(hours) {
@@ -126,13 +126,69 @@ async function fetchStormglassData(lat, lng, hours) {
 }
 
 /**
- * Simple geocoder for missing coords using OpenStreetMap Nominatim.
- * Call this once to populate Latitude and Longitude in SurfBreaks.
- * Be polite with rate limiting.
+ * Region helpers for safer geocoding
+ * countryCodeFor returns a two letter code when we can
+ * bboxFor returns a guard box {minLat, maxLat, minLng, maxLng}
+ */
+function countryCodeFor(region) {
+  if (!region) return null;
+  const r = region.toLowerCase();
+  if (r.includes("ericeira")) return "pt";    // Portugal
+  if (r.includes("torquay")) return "au";     // Australia
+  return null;
+}
+
+function bboxFor(region) {
+  if (!region) return null;
+  const r = region.toLowerCase();
+
+  // generous boxes to catch nearby points but avoid random countries
+  if (r.includes("ericeira")) {
+    return { minLat: 38.90, maxLat: 39.10, minLng: -9.55, maxLng: -9.30 };
+  }
+  if (r.includes("torquay")) {
+    // Surf Coast VIC
+    return { minLat: -38.70, maxLat: -38.20, minLng: 144.10, maxLng: 144.70 };
+  }
+  return null;
+}
+
+function withinBox(lat, lng, box) {
+  if (!box) return true;
+  return (
+    lat >= box.minLat &&
+    lat <= box.maxLat &&
+    lng >= box.minLng &&
+    lng <= box.maxLng
+  );
+}
+
+/**
+ * Safer geocoder using OpenStreetMap Nominatim.
+ * Adds country filter and bounding box where possible.
  */
 async function geocodePlace(name, region) {
+  const cc = countryCodeFor(region);
+  const box = bboxFor(region);
+
   const q = encodeURIComponent(`${name}, ${region}`);
-  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${q}`;
+  const params = new URLSearchParams({
+    format: "json",
+    limit: "1",
+    q,
+  });
+
+  if (cc) params.append("countrycodes", cc);
+  if (box) {
+    // viewbox expects minLng, minLat, maxLng, maxLat
+    params.append(
+      "viewbox",
+      `${box.minLng},${box.minLat},${box.maxLng},${box.maxLat}`
+    );
+    params.append("bounded", "1");
+  }
+
+  const url = `https://nominatim.openstreetmap.org/search?${params.toString()}`;
 
   const response = await fetch(url, {
     headers: { "User-Agent": "CoreLord/1.0 (ops@corelord.app)" },
@@ -140,11 +196,22 @@ async function geocodePlace(name, region) {
   if (!response.ok) {
     throw new Error(`Nominatim ${response.status}`);
   }
+
   const arr = await response.json();
   if (!Array.isArray(arr) || arr.length === 0) return null;
 
   const { lat, lon } = arr[0];
-  return { lat: parseFloat(lat), lng: parseFloat(lon) };
+  const latNum = parseFloat(lat);
+  const lngNum = parseFloat(lon);
+
+  if (!withinBox(latNum, lngNum, box)) {
+    console.warn(
+      `[Geocode] Rejected out of bounds result for "${name}, ${region}" -> ${latNum}, ${lngNum}`
+    );
+    return null;
+  }
+
+  return { lat: latNum, lng: lngNum };
 }
 
 // single break cache
@@ -176,9 +243,9 @@ router.get("/daily", async (req, res) => {
 });
 
 /**
- * Rotating batch
- * Picks a different slice of breaks each day so we do not hit the same first group repeatedly.
- * Optional query overrides for testing:
+ * Rotating batch.
+ * Picks a different slice each day so we do not hit the same first group repeatedly.
+ * Optional testing overrides:
  *   /api/cache/daily-batch?max=5&offset=10
  */
 router.get("/daily-batch", async (req, res) => {
@@ -191,12 +258,10 @@ router.get("/daily-batch", async (req, res) => {
       Math.min(parseInt(req.query.max || String(MAX_CALLS_PER_RUN), 10), total)
     );
 
-    // compute daily offset in UTC so it is stable regardless of region
     const todayIndex = Math.floor((Date.now() - ROTATION_EPOCH_UTC) / 86400000);
     const autoOffset = (todayIndex * max) % total;
     const offset = parseInt(req.query.offset || String(autoOffset), 10) % total;
 
-    // take a slice of size max starting at offset with wrap around
     const selected =
       offset + max <= total
         ? all.slice(offset, offset + max)
@@ -263,7 +328,7 @@ router.get("/daily-batch", async (req, res) => {
 
 /**
  * Admin. Geocode and fill coordinates for any breaks missing Latitude or Longitude.
- * Run once. Logs each update. Polite delay to respect Nominatim usage.
+ * Uses country code hints and bounding boxes so results stay in the right region.
  */
 router.post("/admin/geocode-missing", async (_req, res) => {
   try {
@@ -275,15 +340,16 @@ router.post("/admin/geocode-missing", async (_req, res) => {
         console.log(`[Geocode] Looking up "${brk.Name}, ${brk.Region}"`);
         const coords = await geocodePlace(brk.Name, brk.Region);
         if (!coords) {
-          console.warn(`[Geocode] No result for ${brk.Name}`);
+          console.warn(`[Geocode] No safe result for ${brk.Name}`);
           updates.push({ id: brk.Id, name: brk.Name, ok: false, reason: "no result" });
           continue;
         }
+
         await updateBreakCoords(brk.Id, coords.lat, coords.lng);
-        console.log(
-          `[Geocode] Updated ${brk.Name} -> ${coords.lat}, ${coords.lng}`
-        );
+        console.log(`[Geocode] Updated ${brk.Name} -> ${coords.lat}, ${coords.lng}`);
         updates.push({ id: brk.Id, name: brk.Name, ok: true, ...coords });
+
+        // polite pacing for Nominatim
         await new Promise((r) => setTimeout(r, 900));
       } catch (e) {
         console.error(`[Geocode] ${brk.Name} failed: ${e.message}`);
@@ -299,6 +365,35 @@ router.post("/admin/geocode-missing", async (_req, res) => {
   } catch (err) {
     console.error("[POST /api/cache/admin/geocode-missing] Error:", err.message);
     return res.status(500).json({ message: "Geocode failed", detail: err.message });
+  }
+});
+
+/**
+ * Admin. Audit coordinates that look out of region.
+ * Does not change data. Use it to spot anything odd.
+ */
+router.get("/admin/audit-coords", async (_req, res) => {
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request().query(`
+      SELECT Id, Name, Region, Latitude, Longitude
+      FROM dbo.SurfBreaks
+      WHERE Latitude IS NOT NULL AND Longitude IS NOT NULL
+      ORDER BY Region, Id
+    `);
+
+    const suspicious = [];
+    for (const r of result.recordset) {
+      const box = bboxFor(r.Region);
+      if (box && !withinBox(r.Latitude, r.Longitude, box)) {
+        suspicious.push(r);
+      }
+    }
+
+    return res.json({ totalChecked: result.recordset.length, suspicious });
+  } catch (err) {
+    console.error("[GET /api/cache/admin/audit-coords] Error:", err.message);
+    return res.status(500).json({ message: "Audit failed", detail: err.message });
   }
 });
 
