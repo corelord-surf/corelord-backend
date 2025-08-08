@@ -116,9 +116,7 @@ async function fetchStormglassData(lat, lng, hours) {
     }
 
     const parsed = JSON.parse(text);
-    console.log(
-      `[Stormglass] Received ${parsed.hours?.length || 0} records`
-    );
+    console.log(`[Stormglass] Received ${parsed.hours?.length || 0} records`);
     return parsed;
   } finally {
     clearTimeout(timeout);
@@ -138,19 +136,30 @@ function countryCodeFor(region) {
   return null;
 }
 
+// generous boxes, then we can expand if needed
 function bboxFor(region) {
   if (!region) return null;
   const r = region.toLowerCase();
-
-  // generous boxes to catch nearby points but avoid random countries
   if (r.includes("ericeira")) {
-    return { minLat: 38.90, maxLat: 39.10, minLng: -9.55, maxLng: -9.30 };
+    // around 38.9 to 39.2N, 9.60W to 9.10W
+    return { minLat: 38.90, maxLat: 39.20, minLng: -9.60, maxLng: -9.10 };
   }
   if (r.includes("torquay")) {
     // Surf Coast VIC
-    return { minLat: -38.70, maxLat: -38.20, minLng: 144.10, maxLng: 144.70 };
+    return { minLat: -38.90, maxLat: -38.10, minLng: 144.00, maxLng: 144.80 };
   }
   return null;
+}
+
+function expandBox(box, factor) {
+  const latSpan = (box.maxLat - box.minLat) * (factor - 1) / 2;
+  const lngSpan = (box.maxLng - box.minLng) * (factor - 1) / 2;
+  return {
+    minLat: box.minLat - latSpan,
+    maxLat: box.maxLat + latSpan,
+    minLng: box.minLng - lngSpan,
+    maxLng: box.maxLng + lngSpan,
+  };
 }
 
 function withinBox(lat, lng, box) {
@@ -163,55 +172,106 @@ function withinBox(lat, lng, box) {
   );
 }
 
+// lightweight alias corrections for common local names
+function aliasFor(name) {
+  const map = new Map([
+    ["winki pop", "winkipop"],
+    ["hut gulley", "hutt gully"],
+    ["jarosite reef", "jarosite"],
+    ["the reef", "torquay reef"], // nudge
+    ["boobs", "boobs surf spot"],
+    ["steps", "steps surf spot"],
+    ["point roadnight", "point roadknight"], // common misspelling
+  ]);
+  const key = String(name || "").toLowerCase().trim();
+  return map.get(key) || null;
+}
+
+function nameVariants(name, region) {
+  const variants = [];
+  const alias = aliasFor(name);
+  const base = [name, alias].filter(Boolean);
+
+  for (const b of base) {
+    variants.push(b);
+    variants.push(`${b} surf`);
+    variants.push(`${b} surf spot`);
+    variants.push(`${b} ${region}`);
+    variants.push(`${b} ${region} surf`);
+  }
+  // de dup while preserving order
+  return Array.from(new Set(variants));
+}
+
 /**
- * Safer geocoder using OpenStreetMap Nominatim.
- * Adds country filter and bounding box where possible.
+ * Smarter geocoder using OpenStreetMap Nominatim.
+ * Pass 1: country + tight box
+ * Pass 2: country + expanded box
+ * Pass 3: country only with query variants
+ * Every candidate is validated against the tight or expanded box if one exists
  */
 async function geocodePlace(name, region) {
   const cc = countryCodeFor(region);
   const box = bboxFor(region);
+  const expanded = box ? expandBox(box, 1.8) : null;
 
-  const q = encodeURIComponent(`${name}, ${region}`);
-  const params = new URLSearchParams({
-    format: "json",
-    limit: "1",
-    q,
-  });
+  const variants = nameVariants(name, region);
+  const headers = { "User-Agent": "CoreLord/1.0 (ops@corelord.app)" };
 
-  if (cc) params.append("countrycodes", cc);
-  if (box) {
-    // viewbox expects minLng, minLat, maxLng, maxLat
-    params.append(
-      "viewbox",
-      `${box.minLng},${box.minLat},${box.maxLng},${box.maxLat}`
-    );
-    params.append("bounded", "1");
-  }
+  const buildUrl = (q, boxArg) => {
+    const params = new URLSearchParams({ format: "json", limit: "1", q });
+    if (cc) params.append("countrycodes", cc);
+    if (boxArg) {
+      params.append("viewbox", `${boxArg.minLng},${boxArg.minLat},${boxArg.maxLng},${boxArg.maxLat}`);
+      params.append("bounded", "1");
+    }
+    return `https://nominatim.openstreetmap.org/search?${params.toString()}`;
+  };
 
-  const url = `https://nominatim.openstreetmap.org/search?${params.toString()}`;
+  // helper that tries a set of queries with an optional box and validates
+  const trySet = async (queries, boxArg) => {
+    for (const q of queries) {
+      const url = buildUrl(q, boxArg);
+      const resp = await fetch(url, { headers });
+      if (!resp.ok) continue;
+      const arr = await resp.json();
+      if (!Array.isArray(arr) || arr.length === 0) continue;
 
-  const response = await fetch(url, {
-    headers: { "User-Agent": "CoreLord/1.0 (ops@corelord.app)" },
-  });
-  if (!response.ok) {
-    throw new Error(`Nominatim ${response.status}`);
-  }
+      const { lat, lon } = arr[0];
+      const latNum = parseFloat(lat);
+      const lngNum = parseFloat(lon);
 
-  const arr = await response.json();
-  if (!Array.isArray(arr) || arr.length === 0) return null;
-
-  const { lat, lon } = arr[0];
-  const latNum = parseFloat(lat);
-  const lngNum = parseFloat(lon);
-
-  if (!withinBox(latNum, lngNum, box)) {
-    console.warn(
-      `[Geocode] Rejected out of bounds result for "${name}, ${region}" -> ${latNum}, ${lngNum}`
-    );
+      if (box && !withinBox(latNum, lngNum, box) && boxArg === box) {
+        // result outside tight box, keep looking
+        continue;
+      }
+      if (expanded && boxArg === expanded && !withinBox(latNum, lngNum, expanded)) {
+        continue;
+      }
+      return { lat: latNum, lng: lngNum };
+    }
     return null;
+  };
+
+  // Pass 1: strict
+  if (box) {
+    const hit = await trySet([`${name}, ${region}`], box);
+    if (hit) return hit;
   }
 
-  return { lat: latNum, lng: lngNum };
+  // Pass 2: expanded box
+  if (expanded) {
+    const hit = await trySet([`${name}, ${region}`], expanded);
+    if (hit) return hit;
+  }
+
+  // Pass 3: country only with variants
+  const hit = await trySet(variants.map(v => `${v}`), null);
+  if (hit && (!box || withinBox(hit.lat, hit.lng, expanded || box))) {
+    return hit;
+  }
+
+  return null;
 }
 
 // single break cache
@@ -328,7 +388,7 @@ router.get("/daily-batch", async (req, res) => {
 
 /**
  * Admin. Geocode and fill coordinates for any breaks missing Latitude or Longitude.
- * Uses country code hints and bounding boxes so results stay in the right region.
+ * Uses country code hints and bounding boxes, with widening and variants as fallback.
  */
 router.post("/admin/geocode-missing", async (_req, res) => {
   try {
