@@ -123,6 +123,96 @@ async function fetchStormglassData(lat, lng, hours) {
   }
 }
 
+/* -------------------- NEW: Tide support -------------------- */
+
+/**
+ * Fetch tide (sea level) data from Stormglass and return a map keyed by UTC hour
+ * epoch (ms/3600000), where the value is the average tide height (m) for that hour.
+ */
+async function fetchTideData(lat, lng, hours) {
+  const { start, end } = getTimeRange(hours);
+  // prefer NOAA where available, fall back to sg aggregate
+  const url = `https://api.stormglass.io/v2/tide/sea-level/point?lat=${lat}&lng=${lng}&start=${start}&end=${end}&source=noaa`;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: process.env.STORMGLASS_API_KEY },
+      signal: controller.signal,
+    });
+
+    const text = await res.text();
+    if (!res.ok) {
+      console.warn(`[Stormglass Tide] ${res.status}: ${text}`);
+      return new Map(); // don’t fail the whole run if tide endpoint is unavailable
+    }
+
+    const data = JSON.parse(text)?.data || [];
+    if (!Array.isArray(data) || data.length === 0) return new Map();
+
+    // bucket all samples into hour-average
+    const buckets = new Map(); // hourEpoch -> { sum, count }
+    for (const row of data) {
+      const ts = +new Date(row.time);
+      if (Number.isNaN(ts)) continue;
+
+      const hourEpoch = Math.floor(ts / 3600000); // integer hour in epoch-hours
+      const height =
+        typeof row.noaa === "number"
+          ? row.noaa
+          : typeof row.sg === "number"
+          ? row.sg
+          : null;
+      if (height == null) continue;
+
+      const acc = buckets.get(hourEpoch) || { sum: 0, count: 0 };
+      acc.sum += height;
+      acc.count += 1;
+      buckets.set(hourEpoch, acc);
+    }
+
+    // convert to hour -> average height
+    const result = new Map();
+    for (const [hourEpoch, { sum, count }] of buckets.entries()) {
+      result.set(hourEpoch, sum / Math.max(1, count));
+    }
+    return result;
+  } catch (e) {
+    console.warn(`[Stormglass Tide] fetch failed: ${e.message}`);
+    return new Map();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Mutates forecastJson by writing tideHeight (m) onto each hours[] entry,
+ * using the hour-average from tideMap.
+ */
+function mergeTideIntoForecast(forecastJson, tideMap) {
+  if (!forecastJson || !Array.isArray(forecastJson.hours) || tideMap.size === 0)
+    return;
+
+  for (const h of forecastJson.hours) {
+    const ts = +new Date(h.time);
+    const hourEpoch = Math.floor(ts / 3600000);
+    const height = tideMap.get(hourEpoch);
+    if (typeof height === "number") {
+      h.tideHeight = height; // <— this is what forecast.js will read
+    }
+  }
+
+  // optional: small meta to help debugging
+  forecastJson._tideMeta = {
+    integrated: true,
+    hoursWithTide: forecastJson.hours.filter((x) => typeof x.tideHeight === "number").length,
+  };
+}
+
+/* ----------------------------------------------------------- */
+
 /**
  * Region helpers for safer geocoding
  * countryCodeFor returns a two letter code when we can
@@ -131,8 +221,8 @@ async function fetchStormglassData(lat, lng, hours) {
 function countryCodeFor(region) {
   if (!region) return null;
   const r = region.toLowerCase();
-  if (r.includes("ericeira")) return "pt";    // Portugal
-  if (r.includes("torquay")) return "au";     // Australia
+  if (r.includes("ericeira")) return "pt"; // Portugal
+  if (r.includes("torquay")) return "au"; // Australia
   return null;
 }
 
@@ -142,18 +232,18 @@ function bboxFor(region) {
   const r = region.toLowerCase();
   if (r.includes("ericeira")) {
     // around 38.9 to 39.2N, 9.60W to 9.10W
-    return { minLat: 38.90, maxLat: 39.20, minLng: -9.60, maxLng: -9.10 };
+    return { minLat: 38.9, maxLat: 39.2, minLng: -9.6, maxLng: -9.1 };
   }
   if (r.includes("torquay")) {
     // Surf Coast VIC
-    return { minLat: -38.90, maxLat: -38.10, minLng: 144.00, maxLng: 144.80 };
+    return { minLat: -38.9, maxLat: -38.1, minLng: 144.0, maxLng: 144.8 };
   }
   return null;
 }
 
 function expandBox(box, factor) {
-  const latSpan = (box.maxLat - box.minLat) * (factor - 1) / 2;
-  const lngSpan = (box.maxLng - box.minLng) * (factor - 1) / 2;
+  const latSpan = ((box.maxLat - box.minLat) * (factor - 1)) / 2;
+  const lngSpan = ((box.maxLng - box.minLng) * (factor - 1)) / 2;
   return {
     minLat: box.minLat - latSpan,
     maxLat: box.maxLat + latSpan,
@@ -222,7 +312,10 @@ async function geocodePlace(name, region) {
     const params = new URLSearchParams({ format: "json", limit: "1", q });
     if (cc) params.append("countrycodes", cc);
     if (boxArg) {
-      params.append("viewbox", `${boxArg.minLng},${boxArg.minLat},${boxArg.maxLng},${boxArg.maxLat}`);
+      params.append(
+        "viewbox",
+        `${boxArg.minLng},${boxArg.minLat},${boxArg.maxLng},${boxArg.maxLat}`
+      );
       params.append("bounded", "1");
     }
     return `https://nominatim.openstreetmap.org/search?${params.toString()}`;
@@ -266,7 +359,7 @@ async function geocodePlace(name, region) {
   }
 
   // Pass 3: country only with variants
-  const hit = await trySet(variants.map(v => `${v}`), null);
+  const hit = await trySet(variants.map((v) => `${v}`), null);
   if (hit && (!box || withinBox(hit.lat, hit.lng, expanded || box))) {
     return hit;
   }
@@ -289,10 +382,17 @@ router.get("/daily", async (req, res) => {
 
     console.log(`[Daily] Fetching forecast for ${brk.Name} (${brk.Id})`);
     const json = await fetchStormglassData(brk.Latitude, brk.Longitude, hours);
+
+    // NEW: fetch tide and merge into forecast JSON (non-fatal if tide unavailable)
+    const tideByHour = await fetchTideData(brk.Latitude, brk.Longitude, hours);
+    mergeTideIntoForecast(json, tideByHour);
+
     await storeCachedForecast(breakId, hours, json);
 
     const items = json.hours || [];
-    console.log(`[Daily] Stored ${items.length} hours for ${brk.Name}`);
+    console.log(
+      `[Daily] Stored ${items.length} hours for ${brk.Name} (tide matched=${json._tideMeta?.hoursWithTide || 0})`
+    );
     return res
       .status(200)
       .json({ message: "cached", break: brk.Name, hours: items.length });
