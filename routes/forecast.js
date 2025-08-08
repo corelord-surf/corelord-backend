@@ -6,7 +6,7 @@ import { sql, poolPromise } from '../db.js';
 const router = express.Router();
 
 function getTimeRange(hours) {
-  const now = new Date(); // UTC
+  const now = new Date();
   const end = new Date(now.getTime() + hours * 3600 * 1000);
   return { start: now.toISOString(), end: end.toISOString() };
 }
@@ -49,10 +49,7 @@ async function getCachedForecast(breakId, hours) {
   }
 }
 
-/**
- * Fetch tide (sea level) for the given lat/lng and window.
- * Returns a Map keyed by hour "YYYY-MM-DDTHH" => sea level (meters).
- */
+// Optional live tide fetch if needed
 async function fetchTideMap(lat, lng, hours) {
   const { start, end } = getTimeRange(hours);
   const url = `https://api.stormglass.io/v2/tide/sea-level/point?lat=${lat}&lng=${lng}&start=${start}&end=${end}`;
@@ -77,13 +74,12 @@ async function fetchTideMap(lat, lng, hours) {
 
     const map = new Map();
     for (const p of arr) {
-      // Normalize to Z and group by hour
-      const iso = new Date(p.time).toISOString(); // e.g. 2025-08-09T05:00:00.000Z
+      const iso = new Date(p.time).toISOString();
       const hourKey = iso.slice(0, 13); // YYYY-MM-DDTHH
       const val =
-        typeof p.seaLevel?.sg === 'number'
-          ? p.seaLevel.sg
-          : (typeof p?.seaLevel === 'number' ? p.seaLevel : null);
+        typeof p.noaa === 'number'
+          ? p.noaa
+          : (typeof p.sg === 'number' ? p.sg : null);
       if (val != null) map.set(hourKey, val);
     }
     return map;
@@ -114,10 +110,14 @@ router.get('/timeseries', async (req, res) => {
       return res.status(500).json({ message: 'Invalid forecast data: missing hours array' });
     }
 
-    // Optionally enrich with tide (1 extra request). Default ON; pass includeTide=0 to skip.
+    // Decide if we need to fetch tide live
     let tideByHour = null;
     const includeTide = (req.query.includeTide ?? '1') !== '0';
-    if (includeTide) {
+
+    // Check if cached tide exists in JSON
+    const tideFromCache = json.hours.some(h => typeof h.tideHeight === 'number');
+
+    if (!tideFromCache && includeTide) {
       try {
         tideByHour = await fetchTideMap(brk.Latitude, brk.Longitude, hours);
       } catch (e) {
@@ -131,20 +131,18 @@ router.get('/timeseries', async (req, res) => {
 
       return {
         ts: new Date(entry.time).getTime() / 1000,
-
         waveHeightM: entry.waveHeight?.noaa ?? null,
-
         windSpeedKt:
           entry.windSpeed?.noaa != null ? entry.windSpeed.noaa * 1.94384 : null,
         windDir: entry.windDirection?.noaa ?? null,
-
         swellHeightM: entry.swellHeight?.noaa ?? null,
         swellDir: entry.swellDirection?.noaa ?? null,
         swellPeriodS: entry.swellPeriod?.noaa ?? null,
-
         waterTempC: entry.waterTemperature?.noaa ?? null,
-
-        tideM: tideByHour?.get(hourKey) ?? null
+        tideM:
+          entry.tideHeight ??
+          tideByHour?.get(hourKey) ??
+          null
       };
     });
 
